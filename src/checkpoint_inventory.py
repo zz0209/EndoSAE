@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 from typing import Any, Mapping
 
@@ -125,3 +126,96 @@ def _unique_string_list(value: Any, key: str) -> list[str]:
     if len(value) != len(set(value)):
         raise CheckpointInventoryError(f"{key} must be unique")
     return value
+
+
+def compare_parameter_mapping(
+    checkpoint_tensors: list[Mapping[str, Any]],
+    model_tensors: list[Mapping[str, Any]],
+    *,
+    checkpoint_prefix: str,
+    model_prefix: str = "",
+) -> dict[str, Any]:
+    """Compare a selected checkpoint branch with an instantiated model schema.
+
+    This function consumes metadata only and never loads or copies tensor values.
+    Prefix removal is explicit; no suffix matching or fallback renaming is allowed.
+    """
+    if not checkpoint_prefix:
+        raise CheckpointInventoryError("checkpoint_prefix must be non-empty")
+    checkpoint = _index_mapping_tensors(checkpoint_tensors, checkpoint_prefix, "checkpoint")
+    model = _index_mapping_tensors(model_tensors, model_prefix, "model")
+    checkpoint_names = set(checkpoint)
+    model_names = set(model)
+    missing = sorted(model_names - checkpoint_names)
+    unexpected = sorted(checkpoint_names - model_names)
+    shape_mismatches = []
+    dtype_mismatches = []
+    for name in sorted(checkpoint_names & model_names):
+        if checkpoint[name]["shape"] != model[name]["shape"]:
+            shape_mismatches.append({
+                "name": name,
+                "checkpoint_shape": checkpoint[name]["shape"],
+                "model_shape": model[name]["shape"],
+            })
+        if _canonical_dtype(checkpoint[name]["dtype"]) != _canonical_dtype(model[name]["dtype"]):
+            dtype_mismatches.append({
+                "name": name,
+                "checkpoint_dtype": checkpoint[name]["dtype"],
+                "model_dtype": model[name]["dtype"],
+            })
+    passed = not (missing or unexpected or shape_mismatches or dtype_mismatches)
+    return {
+        "schema_version": "endosae.parameter-mapping-result.v0",
+        "checkpoint_prefix": checkpoint_prefix,
+        "model_prefix": model_prefix,
+        "checkpoint_tensor_count": len(checkpoint),
+        "model_tensor_count": len(model),
+        "canonical_name_sha256": _canonical_name_digest(sorted(checkpoint)),
+        "missing_in_checkpoint": missing,
+        "unexpected_in_checkpoint": unexpected,
+        "shape_mismatches": shape_mismatches,
+        "dtype_mismatches": dtype_mismatches,
+        "exact_mapping_pass": passed,
+        "fallback_used": False,
+        "behavior_testing_allowed": False,
+    }
+
+
+def _index_mapping_tensors(
+    tensors: list[Mapping[str, Any]], prefix: str, label: str
+) -> dict[str, Mapping[str, Any]]:
+    if not isinstance(tensors, list):
+        raise CheckpointInventoryError(f"{label} tensors must be a list")
+    indexed: dict[str, Mapping[str, Any]] = {}
+    for tensor in tensors:
+        if not isinstance(tensor, Mapping) or set(tensor) != {"name", "shape", "dtype", "numel"}:
+            raise CheckpointInventoryError(f"invalid {label} tensor metadata")
+        _require_string(tensor["name"], f"{label}.name")
+        _require_string(tensor["dtype"], f"{label}.dtype")
+        shape = tensor["shape"]
+        if not isinstance(shape, list) or any(
+            not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in shape
+        ):
+            raise CheckpointInventoryError(f"invalid {label} tensor shape")
+        if tensor["numel"] != math.prod(shape):
+            raise CheckpointInventoryError(f"invalid {label} tensor numel")
+        name = tensor["name"]
+        if not name.startswith(prefix):
+            continue
+        canonical = name[len(prefix):]
+        if not canonical:
+            raise CheckpointInventoryError(f"empty canonical {label} name")
+        if canonical in indexed:
+            raise CheckpointInventoryError(f"duplicate canonical {label} name: {canonical}")
+        indexed[canonical] = tensor
+    if not indexed:
+        raise CheckpointInventoryError(f"no {label} tensors matched prefix")
+    return indexed
+
+
+def _canonical_dtype(value: str) -> str:
+    return value.removeprefix("torch.")
+
+
+def _canonical_name_digest(names: list[str]) -> str:
+    return hashlib.sha256(("\n".join(names) + "\n").encode("utf-8")).hexdigest()

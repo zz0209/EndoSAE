@@ -1,6 +1,10 @@
 import unittest
 
-from src.checkpoint_inventory import CheckpointInventoryError, validate_checkpoint_inventory
+from src.checkpoint_inventory import (
+    CheckpointInventoryError,
+    compare_parameter_mapping,
+    validate_checkpoint_inventory,
+)
 
 
 class CheckpointInventoryTests(unittest.TestCase):
@@ -74,6 +78,55 @@ class CheckpointInventoryTests(unittest.TestCase):
         }
         with self.assertRaisesRegex(CheckpointInventoryError, "missing keys disagree"):
             validate_checkpoint_inventory(record)
+
+    def test_exact_parameter_mapping_normalizes_only_torch_dtype_prefix(self):
+        checkpoint = [
+            {"name": "teacher.module.backbone.cls_token", "shape": [1, 1, 3], "dtype": "torch.float32", "numel": 3},
+            {"name": "teacher.module.backbone.norm.weight", "shape": [3], "dtype": "float32", "numel": 3},
+        ]
+        model = [
+            {"name": "cls_token", "shape": [1, 1, 3], "dtype": "float32", "numel": 3},
+            {"name": "norm.weight", "shape": [3], "dtype": "torch.float32", "numel": 3},
+        ]
+        report = compare_parameter_mapping(
+            checkpoint, model, checkpoint_prefix="teacher.module.backbone."
+        )
+        self.assertTrue(report["exact_mapping_pass"])
+        self.assertFalse(report["fallback_used"])
+        self.assertFalse(report["behavior_testing_allowed"])
+
+    def test_mapping_reports_missing_unexpected_shape_and_dtype(self):
+        checkpoint = [
+            {"name": "teacher.backbone.a", "shape": [2], "dtype": "float16", "numel": 2},
+            {"name": "teacher.backbone.extra", "shape": [1], "dtype": "float32", "numel": 1},
+        ]
+        model = [
+            {"name": "a", "shape": [3], "dtype": "float32", "numel": 3},
+            {"name": "missing", "shape": [1], "dtype": "float32", "numel": 1},
+        ]
+        report = compare_parameter_mapping(
+            checkpoint, model, checkpoint_prefix="teacher.backbone."
+        )
+        self.assertFalse(report["exact_mapping_pass"])
+        self.assertEqual(report["missing_in_checkpoint"], ["missing"])
+        self.assertEqual(report["unexpected_in_checkpoint"], ["extra"])
+        self.assertEqual(report["shape_mismatches"][0]["name"], "a")
+        self.assertEqual(report["dtype_mismatches"][0]["name"], "a")
+
+    def test_mapping_rejects_duplicate_canonical_names(self):
+        duplicate = [
+            {"name": "teacher.backbone.a", "shape": [1], "dtype": "float32", "numel": 1},
+            {"name": "teacher.backbone.a", "shape": [1], "dtype": "float32", "numel": 1},
+        ]
+        model = [{"name": "a", "shape": [1], "dtype": "float32", "numel": 1}]
+        with self.assertRaisesRegex(CheckpointInventoryError, "duplicate canonical"):
+            compare_parameter_mapping(duplicate, model, checkpoint_prefix="teacher.backbone.")
+
+    def test_mapping_rejects_empty_match_instead_of_fallback(self):
+        checkpoint = [{"name": "student.a", "shape": [1], "dtype": "float32", "numel": 1}]
+        model = [{"name": "a", "shape": [1], "dtype": "float32", "numel": 1}]
+        with self.assertRaisesRegex(CheckpointInventoryError, "no checkpoint tensors matched"):
+            compare_parameter_mapping(checkpoint, model, checkpoint_prefix="teacher.")
 
 
 if __name__ == "__main__":
