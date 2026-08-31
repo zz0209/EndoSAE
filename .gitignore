@@ -1,0 +1,42 @@
+# Public repository uses a deny-by-default research-asset boundary.
+*.md
+*.markdown
+
+# Models, activations, environments, datasets, results, and generated media.
+artifacts/
+data/
+results/
+figures/
+literature/
+third_party/
+tmp/
+
+# Internal research governance, plans, probes, and machine-specific records.
+configs/
+docs/
+.agents/
+.codex/
+
+# Python/runtime residue and local environments.
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+*.dll
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Secrets and local machine metadata.
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.p12
+*.log
+*.tmp
+Thumbs.db
+.DS_Store
