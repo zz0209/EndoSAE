@@ -62,7 +62,7 @@ def fit(run,config,torch):
     sampler=FrameSupportSampler(rows,masks,train,torch,'cuda')
     write_json(run/'fit_scope.json',{'training_clip_indices':fit_clips,'development_clip_indices':np.flatnonzero(~train).tolist(),
         'training_families':sorted(fit_families),'development_families':sorted(held_families),'fit_frame_indices':sampler.fit_frame_indices,
-        'selected_unique_image_payloads':len(set(hashes)),'previous_clips_reused':config['old_clip_count']})
+        'selected_unique_image_payloads':len(set(hashes)),'previous_clips_reused':config.get('reused_clip_count',config['old_clip_count'])})
     saved=[]
     for method in config['methods']:
         parent={'raw':'raw_balanced','linear48_task':'pca48_balanced','low_rank_topk_task':'topk_frozen_balanced'}[method]
