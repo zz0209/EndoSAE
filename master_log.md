@@ -2038,3 +2038,18 @@ run results/runs/20260904T2133Z_realcolon_supervised_expansion_v1：cohort_confi
 2026-09-04T23:44:05.656292-04:00 本轮固定模型独立确认完成并按用户要求暂停原loop（PAUSED，未删除）。五视频160clips/1280帧全部提取，LR1原环境编码206.0秒且CLS接口一致；六冻结模型纯推理完成，246项指标由sklearn复算最大差2.22e-16。TopK-32平均clip AUROC0.9078125，等192B/token PCA-480.8703125，差+0.0375，五视频均正；video-bootstrap区间[0.0203125,0.05234375]，exact sign-flip p0.0625。Raw0.9109375、PCA-320.8546875、PCA-640.86953125；旧Raw0.8546875。TopK敏感度/FPR0.6875/0.0875，raw0.6/0.0375；排序收益不改写成误报改善。确认输出前声明的次要重构测量NMSE：TopK0.3758962、PCA-480.4333919、PCA-320.4944096、PCA-640.3905660；TopK平均L0恰32。当前应用正方向为可复用表示的任务—存储—重构权衡；单一任务分数缓存仅4B/token、SAE编码参数成本及定位AP边界在report.md说明。
 
 本轮报告保存完整主表/逐视频/统计/贡献和暂停后短路径，未再训练新候选，test未读取。原15项任务测试及7项下载恢复/公开过滤测试通过，六模型实际重放全等。所有本项目资源租约释放。当前等待用户研究并明确恢复；发布仅过滤后的必要代码、测试和根master_log，结果/权重/数据/报告/AGENTS不公开。
+
+2026-09-04T23:47:40.771281-04:00 固定模型确认阶段发布完成：精确七文件实际index审计通过，commit 7d35e84e1107ac9f48b3f846df1cd4bdce9d7e68 已push origin/main且本地/远端引用一致。仅必要源码、两项测试文件及根master_log公开；所有模型、数据、预测、结果报告和研究配置保留本地。原loop继续PAUSED，等待用户研究后明确恢复。此回执留待下个自然提交，不单独触发commit。
+
+2026-09-05T11:35:21.912702-04:00 用户转交EndoFM作者回复与三个数据归档，明确要求接入、解除相关人工等待并恢复原loop。三归档完成hash/路径与成员核验；PolypDiag253视频、train173/val80，文件无交叉无遗漏且0/1映射与normal/abnormal文件名一致，已解出到项目D盘本地研究目录；KUMC19832图像/XML对、CVC612图像编号及mask保留索引。三个包均无checkpoint。HUM-13数据项关闭，官方微调权重缺失只影响对应精确复现；用户内部研究授权不扩张为公开原数据/邮件/权重。主线继续已有REAL-Colon正方向的有限seed与公平PCA确认，新数据先建立训练侧输入消费者。现有结果、val/test暴露身份与原始归档不变。接入证据 results/runs/20260905T152819Z_drwang_author_data_intake_v1/report.md。
+
+2026-09-05T11:38:36.223139-04:00 原endosae-miccai-research-loop恢复ACTIVE并经配置回读确认，保留原id、prompt、五分钟频率和目标任务。新PolypDiag训练集按每类文件大小极值固定4文件，已有视频工具链分别中点解码8帧均通过；无新模型输出、无validation解码。数据接入任务正常完成，D/CPU租约已释放；下一科学周期按RRD继续REAL-Colon有限seed复现与训练内公平基线。行政/接入变更本轮不单独触发公开提交。
+
+2026-09-05T11:50:27.387638-04:00 恢复后的主实验固定：run20260905T1551Z_realcolon_frozen_robustness_v1仅PCA32/48、WD1/10、四训练折共16个head拟合；同fold原PCA/归一化与fit_scope安全复用，训练only256clips按16clip小块上GPU，无新编码或字典拟合。现有任务/分组相关5测试通过，实际采用helper/source/fold hash已在结果前固定；后续两个seed预定20260905/20260906。预检RAM6.19GiB、GPU14145MiB，预算约4GiB/100秒。取得D租约后CPU发现CCAD占用，嵌套run正常退出释放D，模型未启动；当前READY_WAITING_RESOURCE，下次资源空闲时直接接续，不抢占、不把准备/等待当应用结果。
+
+2026-09-05T12:01:27.804955-04:00 PCA公平基线选择完成：run20260905T1551Z_realcolon_frozen_robustness_v1，16个head拟合58.682秒、GPU峰值3769290240bytes。PCA32训练CV AUROC WD1=0.86083984375、WD10=0.83447265625；PCA48 WD1=0.85888671875、WD10=0.85888671875，均选择WD1。280项保存预测指标独立复算最大差2.22e-16；仅训练256clips、每折六fit两held，原输入统计/PCA范围逐项相同，D/CPU/GPU正常释放。后续replication_plan在新最终拟合结果前固定原seed加两预定seed、四方法，PCA采用选中WD1；不以旧WD10对照替代公平比较。只需10新head/2字典，全部seed与视频报告，原五确认数据已暴露身份不变；本轮不将训练CV选择当应用确认。
+ PCA48的两候选AUROC完全相同，WD1由预先规定的首候选tie-break选中，不是PCA48已证明因降低WD而提升。
+
+2026-09-05T12:17:35.117802-04:00 三seed固定复制启动：realcolon_frozen_replication实际复用已验证fit_one/train_dictionary/predict和安全NPZ读取，保持原训练recipe；10新head/2字典，所有模型先拟合与训练预测重放后才评价，旧seed原raw/TopK评价需与W保存预测全等。运行前固定replication_execution绑定计划、原数据/模型来源、新runner及独立分析；RAM7.18GiB、GPU14189MiB，预估GPU7GiB/180秒。D→CPU→GPU已取得租约，当前phasefit；不创建新的模型候选、不改变PCA训练侧WD选择或五视频已暴露身份。
+
+2026-09-05T12:24:51.722098-04:00 冻结表示三seed复制闭环：run20260905T1551Z_realcolon_frozen_robustness_v1，10个新head/2字典加原seed模型复用完成65.731秒，GPU峰值5028584448bytes。全部拟合完成后统一评价；12训练预测重放4816896值全等，旧seed raw/TopK在原五视频保存预测亦全等。492项指标独立sklearn复算最大差2.22e-16，所有租约释放。三seed平均AUROC raw0.9140625、PCA32 0.88515625、PCA48 0.8890625、TopK0.9028645833。TopK对等192B PCA48差+0.0138020833，三个seed差+0.01875/+0.01328125/+0.009375；有单seed/video负差，全部保存报告。以seed平均后视频差bootstrap区间[0.00390625,0.02447917]，exact sign-flip p0.0625，独立单位仍5视频。TopK NMSE0.37576085对PCA48 0.43339187；框AP0.40607946对0.41662310，非定位收益，敏感度/FPR0.670833/0.079167。初始AUROC差0.0375在更公平PCA和seed复制后缩小但方向保留。当前是原确认数据已暴露后的稳健性扩展，test未使用。下一步只补Raw任务方向+残差PCA47的任务适配线性强对照，检验排序信号保留/重构的实际取舍；不另开head网格。主表与英文结果段已写report.md，达到自然阶段发布检查点，仅两必要源码与根日志拟公开。
