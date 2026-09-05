@@ -13,7 +13,8 @@ FORBIDDEN_ROOTS = {
     "artifacts", "configs", "data", "docs", "figures", "literature",
     "results", "third_party", "tmp", ".agents", ".codex",
 }
-FORBIDDEN_NAMES = {"AGENTS.md", "master_log.md", "RRD.md"}
+FORBIDDEN_NAMES = {"AGENTS.md", "RRD.md"}
+ALLOWED_MARKDOWN = {"master_log.md"}
 FORBIDDEN_SUFFIXES = {
     ".md", ".markdown", ".pth", ".pt", ".ckpt", ".safetensors", ".onnx",
     ".npy", ".npz", ".parquet", ".zip", ".tar", ".gz", ".7z", ".mp4",
@@ -40,7 +41,19 @@ def staged_paths() -> list[Path]:
     return [Path(item.decode("utf-8")) for item in result.stdout.split(b"\0") if item]
 
 
-def audit(paths: list[Path]) -> list[str]:
+def staged_payload(relative: Path) -> bytes:
+    """Audit the index bytes that will be committed, including file mode."""
+    normalized = relative.as_posix()
+    entry = subprocess.check_output(
+        ["git", "ls-files", "--stage", "-z", "--", normalized], cwd=ROOT,
+    ).split(b"\0")
+    entries = [item for item in entry if item]
+    if len(entries) != 1 or entries[0].split(b" ", 1)[0] not in {b"100644", b"100755"}:
+        raise ValueError("index entry must be one regular file")
+    return subprocess.check_output(["git", "show", ":" + normalized], cwd=ROOT)
+
+
+def audit(paths: list[Path], payload_reader=None) -> list[str]:
     errors: list[str] = []
     for relative in paths:
         normalized = relative.as_posix()
@@ -50,18 +63,31 @@ def audit(paths: list[Path]) -> list[str]:
         if relative.parts and relative.parts[0] in FORBIDDEN_ROOTS:
             errors.append(f"forbidden research-asset root: {normalized}")
             continue
-        if relative.suffix.lower() in FORBIDDEN_SUFFIXES:
+        if relative.suffix.lower() in FORBIDDEN_SUFFIXES and normalized not in ALLOWED_MARKDOWN:
             errors.append(f"forbidden file type: {normalized}")
             continue
-        target = ROOT / relative
-        if not target.is_file():
-            errors.append(f"staged path is not a regular file: {normalized}")
+        try:
+            if payload_reader is None:
+                target = ROOT / relative
+                if target.is_symlink() or not target.is_file():
+                    raise ValueError("not a regular file")
+                payload = target.read_bytes()
+            else:
+                payload = payload_reader(relative)
+        except (OSError, ValueError, subprocess.CalledProcessError) as error:
+            errors.append(f"unreadable regular staged file: {normalized} ({error})")
             continue
-        size = target.stat().st_size
+        size = len(payload)
         if size > MAX_BYTES:
             errors.append(f"file exceeds {MAX_BYTES} bytes: {normalized} ({size})")
             continue
-        payload = target.read_bytes()
+        try:
+            payload.decode("utf-8")
+            if b"\0" in payload:
+                raise ValueError("NUL byte in text source")
+        except (UnicodeDecodeError, ValueError):
+            errors.append(f"non-text payload in public source snapshot: {normalized}")
+            continue
         for label, pattern in SECRET_PATTERNS.items():
             if pattern.search(payload):
                 errors.append(f"possible {label}: {normalized}")
@@ -73,7 +99,7 @@ def main() -> int:
     if not paths:
         print("public staging audit: no staged files")
         return 1
-    errors = audit(paths)
+    errors = audit(paths, staged_payload)
     if errors:
         print("public staging audit: FAIL", file=sys.stderr)
         for error in errors:

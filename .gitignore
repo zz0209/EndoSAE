@@ -1,5 +1,6 @@
 # Public repository uses a deny-by-default research-asset boundary.
 *.md
+!master_log.md
 *.markdown
 
 # Models, activations, environments, datasets, results, and generated media.

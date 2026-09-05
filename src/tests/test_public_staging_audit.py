@@ -12,6 +12,18 @@ SPEC.loader.exec_module(MODULE)
 
 
 class PublicStagingAuditTests(unittest.TestCase):
+    def test_only_root_master_log_is_markdown_exception(self):
+        safe = lambda path: b"Research process and aggregate result summary.\n"
+        self.assertEqual(MODULE.audit([Path("master_log.md")], safe), [])
+        self.assertTrue(MODULE.audit([Path("other/master_log.md")], safe))
+        self.assertTrue(MODULE.audit([Path("AGENTS.md")], safe))
+
+    def test_supplied_index_bytes_are_audited(self):
+        secret = lambda path: b"-----BEGIN " + b"PRIVATE KEY-----\n"
+        self.assertTrue(MODULE.audit([Path("master_log.md")], secret))
+        self.assertTrue(MODULE.audit([Path("safe.py")], secret))
+        self.assertTrue(MODULE.audit([Path("safe.py")], lambda path: b"\0binary"))
+
     def test_forbidden_roots_and_markdown(self):
         errors = MODULE.audit([Path("docs/plan.txt"), Path("README.md")])
         self.assertEqual(len(errors), 2)
