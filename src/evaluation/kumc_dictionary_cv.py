@@ -98,6 +98,10 @@ def execute(run, config):
             if sparse:
                 model = TopKAutoencoder(768, 1536, 32).cuda()
                 model.load_state_dict(arrays(Path(model_config['models'][parent]['dictionary']), torch, 'cuda'), strict=True)
+                if config.get('representation_update') == 'low_rank':
+                    from src.sae.low_rank_topk import LowRankTopK
+                    torch.manual_seed(seed + fold + 200000)
+                    model = LowRankTopK(model, config['update_rank'])
             else:
                 model = LinearBottleneck(norm['basis'][:, :48])
             head = torch.nn.Linear(len(mean), 1, device='cuda')
@@ -129,17 +133,22 @@ def execute(run, config):
                     raise ValueError('Nonfinite objective')
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
-                if sparse:
+                if sparse and config.get('representation_update') != 'low_rank':
                     model.project_decoder_gradient_()
                 # Separate clipping prevents head BCE from rescaling MSE-only dictionary gradients.
                 torch.nn.utils.clip_grad_norm_(head.parameters(), 1.)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.)
                 optimizer.step()
-                if sparse:
+                if sparse and config.get('representation_update') != 'low_rank':
                     model.normalize_decoder_()
                 if (step + 1) % 50 == 0:
                     history.append({'step': step + 1, 'bce': float(bce.detach()), 'mse': float(mse.detach())})
             np.savez(destination / 'representation.npz', **{k: v.detach().cpu().numpy() for k,v in model.state_dict().items()})
+            if config.get('representation_update') == 'low_rank':
+                if not model.base_unchanged():
+                    raise ValueError('Frozen low-rank base changed')
+                np.savez(destination / 'materialized_representation.npz',
+                         **{k: v.cpu().numpy() for k,v in model.materialized_state().items()})
             np.savez(destination / 'head.npz', weight=head.weight.detach().cpu().numpy(), bias=head.bias.detach().cpu().numpy(),
                 feature_mean=mean.cpu().numpy(), feature_scale=scale.cpu().numpy())
             write_json(destination / 'training.json', {'held_family': held, 'fit_clip_indices': np.flatnonzero(fit).tolist(),
@@ -147,9 +156,14 @@ def execute(run, config):
                 'reconstruction_fit_clip_indices': np.flatnonzero(fit).tolist(), 'fit_sources': sampler.sources,
                 'normalization_fit_target_indices': [], 'task_updates_representation': joint,
                 'representation_parameters': sum(p.numel() for p in model.parameters()),
+                'representation_trainable_parameters': sum(p.numel() for p in model.parameters() if p.requires_grad),
+                'representation_update': config.get('representation_update', 'full'),
+                'low_rank_base_unchanged': model.base_unchanged() if config.get('representation_update') == 'low_rank' else None,
                 'head_parameters': sum(p.numel() for p in head.parameters()), 'feature_payload_bytes': 192,
                 'warm_max_absolute_difference': warm_error, 'history': history,
-                'frozen_before_evaluation': {name: digest(destination / name) for name in ['representation.npz', 'head.npz']}})
+                'frozen_before_evaluation': {name: digest(destination / name) for name in
+                    (['representation.npz', 'head.npz', 'materialized_representation.npz'] if config.get('representation_update') == 'low_rank'
+                     else ['representation.npz', 'head.npz'])}})
             scores, stats = evaluate(model, head, mean, scale, x, masks.shape)
             np.save(destination / 'all_patch_predictions.npy', scores, allow_pickle=False)
             np.savez(destination / 'all_reconstruction_statistics.npz', **stats)
