@@ -154,8 +154,10 @@ def select(run, config, _rows):
         reports.append(record)
         write_json(run / (video + "_annotation_exclusions.json"), excluded)
         print("SELECT " + json.dumps(record), flush=True)
-    old_run = ROOT / config["reuse_pilot_run"]
-    old_clips = {row["clip_id"]: row for line in (old_run / "clip_manifest.jsonl").read_text().splitlines() for row in [json.loads(line)]}
+    old_clips = {}
+    if config.get("reuse_pilot_run"):
+        old_run = ROOT / config["reuse_pilot_run"]
+        old_clips = {row["clip_id"]: row for line in (old_run / "clip_manifest.jsonl").read_text().splitlines() for row in [json.loads(line)]}
     new_clips = {row["clip_id"]: row for row in clips}
     if not all(new_clips.get(key) == row for key, row in old_clips.items()):
         raise RuntimeError("pilot clip reuse changed sampling or labels")
