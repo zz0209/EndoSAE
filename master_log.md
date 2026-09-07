@@ -2487,3 +2487,55 @@ Completed numerical checks:12modelreplays0,1617independentAPchecks maximum4.4408
 Decision:retain presence-aware role learning for its spatial evidence and modest localization signal; retain factual output for detection. Round3 now targets same-data activation supervision, ordinary subspace controls including coefficient-strength sensitivity, and a true different warm initialization with paired task/role replication. Merely changing torchseed before loading the same warm checkpoint would not be an initialization replication. Exact next recipe will be fixed before execution; no new model from round3 has started. Reserved9public archives continue their original prefetch; first3whole-filechecks complete, no extraction/testpixelread. CPUtraining and analysis finished normally.
 
 RRD count:2/7completed,next3,5remaining. The original20-minute automation staysACTIVE and must pause in place after delivery7. This is a natural result checkpoint; publication filtering will be applied before any authorized public log sync. Raw results, predictions, images, weights, manuscript and governance files are not part of the default public scope.
+
+
+## 2026-09-06T22:35:20.649914-04:00 — 第3/7轮启动：作用监督的匹配对照与真实初始化复现
+
+- 核心问题：第2轮同材料定位增量及阳性组作用分离，是否超出激活空间监督/普通子空间，并在真实不同的warm字典下保留。仍是开发研究，尚无独立确认。
+- 新run `results/runs/20260907T0145Z_mixed_role_controls_v1` 固定五方法×四折共20个600更新模型：激活监督；混合训练材料PCA96固定旋转后的相对权重与SAE绝对权重两个控制；实际20260905 warm下成对task/presence。四折训练统计逐一一致、warm资产确实不同，复用原采样/训练序列；不选择最好seed。
+- 四折普通基底各用35,456个训练patch，三来源/类别层等权；激活尺度和所有初始损失标定只用拟合材料。梯度与旧BE模型重放预检通过；数值检查不是研究正结果。固定方案UTC时间为2026-09-07T02:35:18.596457+00:00，本条为实际美东写入时间。
+- 对新模型及12个既有BE模型补同模型context删除，按每clip输入RMS匹配P/N删除，标签不用于方向选择或幅度匹配。输入幅度匹配不等于输出作用匹配，也不消除组大小差异。保留定位、检出、角色/非目标作用及训练代价的所有预定比较。
+- 任务经共享D-I/O与CPU租约执行，每模型后释放并给等待中的公开压缩包校验留出窗口。九视频包只下载/整包校验，未解包、未看新测试图像。当前第3轮进行中、仅2/7已交付；原loop仍按20分钟唤醒，最终第7轮交付后原位暂停。
+
+
+### 2026-09-06T22:36:26.439308-04:00 — 第3轮预检失败定位与受影响检查恢复
+
+首次预检在第二warm初始化的encoder有限差分处失败：epsilon0.0005时两侧各改变2个TopK支持位置，数值梯度0.400356与自动求导0.342340相差14.49%。未启动模型拟合。原代码、plan、失败日志和诊断保留于BG的preflight_attempt1；训练材料PCA/标定已完成881.800秒，无需重做。
+
+只修复预检：从预定epsilon列表选择最大且两侧TopK支持都不变的扰动，然后检查梯度；选择过程不看梯度吻合程度，原3%误差标准不变。该初始化选epsilon0.0001，误差0.06657%；激活监督/普通子空间的检查误差分别3.66e-6/5.33e-6，旧BE输出重放误差0。原训练目标、序列、参数、材料与标定未修改，原准备plan身份仍绑定。修复不计科学正结果。冻结配置已写入，训练通过原资源协调器实际开始；当前仍第3/7轮进行中。
+
+
+### 2026-09-06T23:01:37.239905-04:00 — 用户要求原位暂停loop，保留恢复点
+
+原 `endosae-miccai-research-loop` 已通过automation工具设为PAUSED并读回核验，原ID、20分钟间隔、prompt和目标task保留，未删除或创建替代loop。当前2/7已交付，第3轮BG批处理仍运行：已有2个模型完成，当前fold0/rank96_absolute训练中。此次操作仅暂停定时唤醒，未终止已有批处理或下载。恢复须用户明确指令；本条不计新研究交付。
+
+
+### 2026-09-07T17:46:29.726531-04:00 — 保持loop暂停，手动恢复并完成第3轮的明确授权
+
+用户指出后台批处理在Codex任务实例关闭附近中断，并明确要求不重启loop、完成第3轮全部任务。当前重新核验12个模型的配置/权重/预测hash及receipt完整；第13个fold2/rank96_absolute完成600更新，原model和CVC预测可读，原PID及资源租约持有PID均已失效。原RUNNING是陈旧文件，不是活跃证据。用户提供的00:39:59任务Shutdown诊断与本地最后预测00:39:42/租约00:39:52相符，具体是谁触发实例关闭仍不确定；不将其写成已确认的软件崩溃或用户操作。
+
+在BG/recovery_20260907保留原状态和部分输出；不改已冻结科学config，不重训12个完成模型或第13个完成的权重。新恢复只补第13个评估及剩余7次拟合、12个参考模型匹配作用评估、固定分析和本轮论文/图表/决策。第13个最终训练历史和精确结束计时未落盘，保留其step600耗时下界并显式标注，不能编造历史。
+
+恢复由一次性Windows任务EndoSAE-Round3-Recovery-20260907承载，无触发器或重复计划；实际进程父链python→powershell→svchost→services，与Codex分离。每项重任务前检查RAM/提交余量并取得原D-I/O/CPU租约；原陈旧租约由正常acquire依据失效身份回收，未强制抢占。新日志直接持续写盘，状态包含心跳和PID。原Codex loop读回仍PAUSED；Windows任务不是替代loop。九预留视频只下载/校验，未读取新测试像素。
+
+
+## 2026-09-07T19:04:26.2920818-04:00 — Round3 activation comparator alignment correction
+
+During manuscript-to-implementation review, before the first aggregate primary-outcome analysis, the new activation proxy was found to reshape native patch-major/time-minor tokens directly into time-major spatial labels. Four original activation comparators are retained but excluded from valid method comparisons. The original actual-output paths, rank controls and paired task/presence objectives are unaffected. A nonuniform spatiotemporal sentinel gives original proxy error0.1259582679 versus corrected error0 and exactly matches the existing EndoFM frame conversion. The prior finite-difference check validated gradients but missed label-position identity.
+
+The correction preserves the original frozen run and repeats only four activation fits with the correct permutation and fitting-only beta recalibration under the original rule. It is a bounded one-time Windows job under normal shared leases, not a restart of the paused research loop. Complete matched-context evaluation and corrected aggregate results remain pending; no method advantage is inferred from the invalid comparator. Correction consumer:results/runs/20260907T2300Z_activation_alignment_correction_v1.
+
+
+### 2026-09-07T19:46:01-04:00 — 第3/7轮完整交付：恢复、纠错、强对照与用途结论
+
+旧Codex实例关闭附近中断的BG批处理已恢复并全部结束；原12完整模型和第13已训练权重复用，未把旧RUNNING当活跃证据。一次性无触发器Windows作业在服务父链运行，已正常退出并停用保留；原Codex loop始终PAUSED。停止发起者仍未知，旧启动方式依附Codex且状态收尾不足的执行问题已写入runtime reference。内存实际测量支持有余量的准入，全部重任务通过正常资源协调，未抢占其他项目。
+
+原BG20拟合与12参考context评估完成。总体主结果分析前发现四个activation代理token/空间标签错位，保留失效版本并在BH仅重训四折正确对齐对照，按原训练内规则重标定beta。最终有效新模型20、参考12，32模型重放误差0，4312 AP复算最大4.44e-16，context RMS最大1.192e-7；无预留测试像素读取。
+
+直接作用对task的粗定位AP差两初始化分别+0.013551/-0.005443；角色MSE从2.516868/4.699145降至0.160990/0.135200，作用分离改善重复但定位增益不重复。正确激活对照AP0.398023/角色MSE2.583762；直接作用0.399660/0.160990。普通rank96绝对权重AP0.401210/角色MSE0.194592、每折148320参数，对SAE2361600，不能保留稀疏独有定位优势。四视频条件区间不替代独立确认，区间跨零不证明等价。
+
+在首次计算signed P图定位指标前记录事后开发协议。直接作用第一初始化P图AP0.304304，低于同模型factual0.399660；对普通绝对权重P图只高0.009042且区间跨零。第二初始化P图0.364348低于task0.387685，四视频均负。固定功能检测读出也未建立优势；当前证据仍不能组成成熟的独特应用/解释方法。
+
+完整英文稿更新为10页本地审读版、4图3表，保留完整方法公式、八方案、不利结果及10项来源，全部页面已渲染并视觉核验。旧两轮稿件与失效证据保留。本轮结果入口results/runs/20260907T2300Z_activation_alignment_correction_v1/summary.json及posthoc_P_map_summary.json；本地论文output/paper/endosae_role_manuscript_round3.pdf。以上路径仅作本地可追溯文字，不授权公开其内容资产。
+
+轮次3/7已交付，剩4。下一轮仅准备P-only作用监督的有界消融，检验强制N作用的代价；不是机制已证实或方法家族失败。没有启动第4轮，也不消耗预留九视频。原loop保持PAUSED；恢复仍遵循用户明确指令。
