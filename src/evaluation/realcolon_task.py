@@ -18,6 +18,8 @@ import time
 
 import numpy as np
 
+from src.checkpoint_io import atomic_write_json, pause_after_checkpoint
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -31,9 +33,9 @@ def digest(path):
 
 def write_json(path, value):
     path = Path(path)
-    temporary = path.with_suffix(path.suffix + ".partial")
-    temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    atomic_write_json(path, value)
+    if path.name == 'progress.json':
+        pause_after_checkpoint(path)
 
 
 def project_boxes(frame):
