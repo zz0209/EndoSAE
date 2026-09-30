@@ -18,6 +18,8 @@ def main():
     parser.add_argument('--evaluation-seconds', type=float, default=530.)
     parser.add_argument('--discovery-script', default='scripts/discover_component_memory.py')
     parser.add_argument('--discovery-label', default='成分作用与组合干预')
+    parser.add_argument('--discovery-heads', action='store_true')
+    parser.add_argument('--head-seconds', type=float, default=120.)
     args = parser.parse_args()
     run = args.run
     config = read_json(run / 'config.json')
@@ -41,6 +43,12 @@ def main():
     python = str(ROOT / 'artifacts/environments/modern/Scripts/python.exe')
     evaluation_run = ('\\\\?\\' if os.name == 'nt' else '') + str(run.resolve())
     stages = []
+    if args.discovery_heads:
+        stages.append(dict(id='discovery_heads', label='发现成分所用的独立身份模型', kind='heads',
+            command=[python, args.discovery_script, '--config', str(run / 'config.json'),
+                     '--phase', 'heads', '--resume'],
+            progress=str(run / 'head_progress.json'), output=str(run / 'head_summary.json'),
+            units=9, unit='个身份模型', estimate_seconds=args.head_seconds, resources=[]))
     for method in config['methods']:
         stages.append(dict(id='discover_' + method,
             label=('SAE · ' if method == 'sparse_edit' else '普通字典 · ') + args.discovery_label,
