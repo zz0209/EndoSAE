@@ -28,6 +28,13 @@ def hashes():
     return result
 
 
+def agreement_gradient(gradients):
+    stacked = torch.stack(gradients)
+    agreed = (stacked > 0).all(0) | (stacked < 0).all(0)
+    summed = stacked.sum(0)
+    return torch.where(agreed, summed, torch.zeros_like(summed)), agreed
+
+
 def design(assets, records, videos, reference, include_canonical):
     pairs = parent.shared.shared.chronological_pairs(records, videos)
     rows, excluded = [], []
@@ -138,6 +145,10 @@ def fit_job(config, output, method, seed, fold, arm, steps, resume, stop_after_s
     if arm == "trainable_decoder":
         groups.append(dict(params=[model.decoder.weight], lr=config["decoder_learning_rate"]))
     optimizer = torch.optim.Adam(groups)
+    parameters = [p for group in optimizer.param_groups for p in group["params"]]
+    gradient_rule = config.get("gradient_rule", "mean")
+    if gradient_rule not in ("mean", "agreement"):
+        raise ValueError("Unknown gradient rule")
     parts = []
     for spec in specs:
         reference = FrozenSupCon(spec["directory"]).to(config["device"])
@@ -168,14 +179,28 @@ def fit_job(config, output, method, seed, fold, arm, steps, resume, stop_after_s
     for step in range(first, steps + 1):
         optimizer.zero_grad(set_to_none=True)
         totals = np.zeros(3)
+        partition_gradients = [[] for _ in parameters]
         for part in parts:
+            if gradient_rule == "agreement":
+                optimizer.zero_grad(set_to_none=True)
             terms = loss_terms(model, gains, scale, original_decoder, part, config)
             objective = terms[0] + config["identity_weight"] * terms[1] + config["decoder_anchor_weight"] * terms[2]
             if not torch.isfinite(objective):
                 raise ValueError("Nonfinite decoder objective")
             (objective * part["group_weight"]).backward()
+            if gradient_rule == "agreement":
+                for parameter, stored in zip(parameters, partition_gradients):
+                    if parameter.grad is None or not torch.isfinite(parameter.grad).all():
+                        raise ValueError("Invalid partition gradient")
+                    stored.append(parameter.grad.detach().clone())
             totals += np.array([float(value.detach()) for value in terms]) * part["group_weight"]
-        parameters = [p for group in optimizer.param_groups for p in group["params"]]
+        agreement = {}
+        if gradient_rule == "agreement":
+            for index, (parameter, gradients) in enumerate(zip(parameters, partition_gradients)):
+                combined, mask = agreement_gradient(gradients)
+                parameter.grad = combined
+                agreement[f"parameter{index}_agreement_fraction"] = float(mask.float().mean())
+                agreement[f"parameter{index}_gradient_norm"] = float(torch.linalg.vector_norm(combined))
         if any(p.grad is None or not torch.isfinite(p.grad).all() for p in parameters):
             raise ValueError("Invalid decoder/gain gradient")
         gradient = float(torch.nn.utils.clip_grad_norm_(parameters, config["gradient_clip_norm"]))
@@ -184,7 +209,7 @@ def fit_job(config, output, method, seed, fold, arm, steps, resume, stop_after_s
         optimizer.step()
         if arm == "trainable_decoder":
             model.normalize_decoder()
-        row = dict(step=step, canonical_loss=float(totals[0]), tail_loss=float(totals[1]), anchor_loss=float(totals[2]), gradient=gradient)
+        row = dict(step=step, canonical_loss=float(totals[0]), tail_loss=float(totals[1]), anchor_loss=float(totals[2]), gradient=gradient, **agreement)
         history.append(row)
         stopping = stop_after_step is not None and step >= stop_after_step
         if step % config["checkpoint_every"] == 0 or step == steps or stopping:

@@ -174,6 +174,9 @@ def summarize(run, smoke, resume):
     previous.summarize(run, smoke, resume)
     root = run / "smoke" if smoke else run
     summary = read_json(root / "summary.json")
+    config = read_json(run / "config.json")
+    title = ("Shared-gradient decoder training" if config.get("gradient_rule") == "agreement"
+             else "Decoder directions and identity-tail training")
     output = root / "figures"
     output.mkdir(exist_ok=True)
     table = pd.DataFrame(summary["procedure_rows"])
@@ -203,17 +206,37 @@ def summarize(run, smoke, resume):
             ax.spines[["right", "top"]].set_visible(False)
     handles, names = axes[0, 0].get_legend_handles_labels()
     fig.legend(handles, names, loc="upper center", ncol=len(names), frameon=False, bbox_to_anchor=(.65, .96))
-    fig.suptitle("Decoder directions and identity-tail training" + (" | real smoke only" if smoke else ""), fontsize=16)
+    fig.suptitle(title + (" | real smoke only" if smoke else ""), fontsize=16)
     fig.text(.02, .025, "All seeds; black marks show means. Equal procedure weighting; panel scales differ.\n"
         "Common development protection requirement. Extension uses frozen thresholds; both populations were previously examined.", fontsize=9)
     fig.tight_layout(rect=(0, .08, 1, .93))
     for extension in ("png", "pdf"):
         fig.savefig(output / ("application_outcomes." + extension), dpi=180)
     plt.close(fig)
-    lines = ["# Decoder directions and identity-tail training", "", "Both application populations have been examined previously.", "",
+    lines = ["# " + title, "", "Both application populations have been examined previously.", "",
         "| Population | Method | Repeat removal | Other retention | First prompt |", "|---|---|---:|---:|---:|"]
     for row in summary["aggregates"]:
         lines.append(f"| {row['population']} | {row['method']} | " + " | ".join(f"{100 * row[m]:.4f}%" for m in parent.METRICS) + " |")
+    if config.get("gradient_rule") == "agreement":
+        mean_run = Path(config["mean_gradient_run"]) / ("smoke" if smoke else "")
+        mean = pd.DataFrame(read_json(mean_run / "summary.json")["procedure_rows"])
+        paired = table.merge(mean, on=["population", "method", "seed", "video"],
+                             suffixes=("", "_mean"), validate="one_to_one")
+        if len(paired) != len(table):
+            raise ValueError("Mean-gradient reference is incomplete")
+        for metric in parent.METRICS:
+            paired[metric + "_change"] = paired[metric] - paired[metric + "_mean"]
+        original = paired[paired.method == "reference_supcon"]
+        if any((original[m + "_change"] != 0).any() for m in parent.METRICS):
+            raise ValueError("Original reference differs between gradient rules")
+        paired.to_csv(output / "agreement_minus_mean_procedures.csv", index=False)
+        contrast = paired.groupby(["population", "method", "seed"])[[m + "_change" for m in parent.METRICS]].mean()
+        contrast.to_csv(output / "agreement_minus_mean_seeds.csv")
+        lines.extend(["", "## Paired change from mean-gradient training", "",
+            "Percentage-point changes; procedures then seeds receive equal weight.", "",
+            "| Population | Method | Repeat removal | Other retention | First prompt |", "|---|---|---:|---:|---:|"])
+        for (population, method), row in contrast.groupby(["population", "method"]).mean().iterrows():
+            lines.append(f"| {population} | {method} | " + " | ".join(f"{100 * row[m + '_change']:+.4f}" for m in parent.METRICS) + " |")
     (root / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     atomic_write_json(output / "manifest.json", dict(status="COMPLETE", summary_sha256=parent.digest(root / "summary.json"),
         training_sha256=parent.digest(root / "training_summary.json"), source_sha256=parent.digest(__file__),
