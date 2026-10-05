@@ -166,7 +166,8 @@ def verify(run, recovery, input_loader=load_inputs):
                     np.testing.assert_array_equal(actual, archive[f'{scope}_{variant}'])
                     component_checks.append(float(np.max(np.abs(actual - expected))))
     atomic_write_json(run / 'numerical_verification.json', dict(status='PASS', models=checks,
-        normalization=normalization_checks, held_pair_rosters_identical=True, original_arrays_exact=244,
+        normalization=normalization_checks, held_pair_rosters_identical=True,
+        original_arrays_exact=config.get('original_arrays_exact', 244),
         recovery_arrays_exact=restored, component_formula_checks=len(component_checks),
         component_formula_max_error=max(component_checks)))
     print('TEMPORAL_VERIFICATION_PASS', len(checks), 'models', restored, 'recovery arrays', len(component_checks), 'component checks', flush=True)

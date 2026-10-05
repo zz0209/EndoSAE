@@ -127,7 +127,7 @@ def train(run, smoke, resume, output, stop_after, input_loader=load_inputs, sour
         raise ValueError('Fixed procedure folds changed')
     atomic_write_json(root / 'records.json', records)
     atomic_write_json(root / 'folds.json', folds)
-    atomic_write_json(root / 'input_identity.json', dict(identity, original_arrays_exact=244,
+    atomic_write_json(root / 'input_identity.json', dict(identity, original_arrays_exact=config.get('original_arrays_exact', 244),
         train_observations=sum(row['partition'] == 'train' for row in records),
         validation_observations=sum(row['partition'] == 'val' for row in records), tokens=len(raw)))
     seeds = config['seeds'][:1] if smoke else config['seeds']

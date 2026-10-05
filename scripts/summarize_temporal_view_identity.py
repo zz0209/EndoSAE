@@ -44,13 +44,14 @@ def summarize(run, training_root, output):
     seed_frame = frame.groupby(['partition', 'condition', 'method', 'seed'], sort=False)[metrics].mean().reset_index()
     summary.to_csv(output / 'summary.csv', index=False)
     seed_frame.to_csv(output / 'seeds.csv', index=False)
-    keys = ['partition', 'method', 'seed', 'video_id']
-    original = frame[frame.condition == 'original_four'].set_index(keys)
-    expanded = frame[frame.condition == 'expanded_real_views'].set_index(keys)
-    if set(original.index) != set(expanded.index):
-        raise ValueError('Observation-condition procedure rosters differ')
-    contrasts = (expanded[metrics] - original[metrics]).reset_index()
-    contrasts.to_csv(output / 'observation_contrasts.csv', index=False)
+    if len(config['conditions']) == 2:
+        keys = ['partition', 'method', 'seed', 'video_id']
+        original = frame[frame.condition == 'original_four'].set_index(keys)
+        expanded = frame[frame.condition == 'expanded_real_views'].set_index(keys)
+        if set(original.index) != set(expanded.index):
+            raise ValueError('Observation-condition procedure rosters differ')
+        contrasts = (expanded[metrics] - original[metrics]).reset_index()
+        contrasts.to_csv(output / 'observation_contrasts.csv', index=False)
     ordinary = []
     for condition in config['conditions']:
         sparse = frame[(frame.condition == condition) & (frame.method == 'token_sparse')].set_index(['partition', 'seed', 'video_id'])
@@ -98,7 +99,7 @@ def summarize(run, training_root, output):
                 for side, condition in enumerate(config['conditions']):
                     subset = frame[(frame.partition == partition) & (frame.method == method) & (frame.condition == condition)]
                     per_video = subset.groupby('video_id')[metric].mean().to_numpy()
-                    x = index + (side - .5) * .36
+                    x = index + (side - (len(config['conditions']) - 1) / 2) * .36
                     axis.bar(x, np.mean(per_video), width=.32, color=colors[condition],
                         label='4 real observations' if index == 0 and side == 0 else '32 real observations' if index == 0 else None)
                     axis.scatter(x + np.linspace(-.08, .08, len(per_video)), per_video, color='#253645', s=12, zorder=3)
@@ -119,7 +120,7 @@ def summarize(run, training_root, output):
             axis.bar(index - .18, subset.fit_confusion_contribution.mean(), width=.34, color='#b7c2cb', label='Fitting procedures' if index == 0 else None)
             axis.bar(index + .18, subset.held_confusion_contribution.mean(), width=.34, color='#197698', label='Excluded procedures' if index == 0 else None)
         axis.axhline(0, color='#333333', linewidth=.7)
-        axis.set(xticks=range(4), xticklabels=labels, ylabel='Different minus same identity contribution',
+        axis.set(xticks=range(len(labels)), xticklabels=labels, ylabel='Different minus same identity contribution',
             title='Grouped training' if partition == 'training_oof' else 'Examined validation')
         axis.legend(fontsize=8)
     figure.suptitle('16 components ranked on original fitting observations; unchanged rankings on held procedures')

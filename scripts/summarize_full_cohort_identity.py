@@ -14,6 +14,7 @@ def compare(run, training_root):
     comparison = Path(config['comparison_run']) / ('smoke' if training_root != run else '') / 'analysis'
     current = pd.read_csv(output / 'procedures.csv')
     original = pd.read_csv(comparison / 'procedures.csv')
+    original = original[original.condition.isin(config['conditions'])]
     keys = ['partition', 'condition', 'method', 'seed', 'video_id']
     metrics = ['recall', 'negative_retention', 'auroc', 'cross_interval_recall']
     first, second = original.set_index(keys), current.set_index(keys)
@@ -31,7 +32,8 @@ def compare(run, training_root):
     summary.to_csv(output / 'cohort_summary.csv', index=False)
     delta.groupby(['partition', 'condition', 'method', 'seed'], sort=False)[metrics].mean().reset_index().to_csv(
         output / 'cohort_seed_contrasts.csv', index=False)
-    figure, axes = plt.subplots(2, 2, figsize=(11, 7.5), layout='constrained')
+    figure, axes = plt.subplots(2, len(config['conditions']), squeeze=False,
+        figsize=(5.5 * len(config['conditions']), 7.5), layout='constrained')
     for row, partition in enumerate(['training_oof', 'validation']):
         for column, condition in enumerate(config['conditions']):
             axis = axes[row, column]

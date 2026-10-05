@@ -93,13 +93,13 @@ def intervention_rows(pairs, before, after, boundary, threshold):
 
 
 @torch.no_grad()
-def analyze(run, training_root, output, resume):
+def analyze(run, training_root, output, resume, input_loader=original_inputs):
     config = read_json(run / 'config.json')
     training = read_json(training_root / 'training_summary.json')
     if training['status'] != 'COMPLETE':
         raise ValueError('Training is incomplete')
     output.mkdir(parents=True, exist_ok=True)
-    raw, offsets, records = original_inputs(config)
+    raw, offsets, records = input_loader(config)
     lookup = {(row['clip_id'], row['lesion_id']): i for i, row in enumerate(records)}
     torch.set_num_threads(1)
     torch.backends.cuda.matmul.allow_tf32 = False

@@ -34,6 +34,7 @@ def inspect(run):
     representations = []
     for name, root in [('reference', Path(config['comparison_run'])), ('current', run)]:
         frame = pd.read_csv(root / 'analysis/representations.csv')
+        frame = frame[frame.condition.isin(config['conditions'])]
         grouped = frame.groupby(['partition', 'condition', 'method', 'seed', 'video_id'])[
             ['reconstruction_nmse', 'local_active', 'pooled_active']].mean().groupby(
             ['partition', 'condition', 'method']).mean().reset_index()
@@ -69,13 +70,15 @@ def inspect(run):
         first, second = read_json(folder / 'sequence.json'), read_json(old / 'sequence.json')
         length = min(len(first), len(second))
         assert first[:length] == second[:length]
-        with np.load(folder / 'normalization.npz') as a, np.load(old / 'normalization.npz') as b:
-            for key in a.files:
-                np.testing.assert_array_equal(a[key], b[key])
+        if config.get('comparison_axis') != 'representation_layer':
+            with np.load(folder / 'normalization.npz') as a, np.load(old / 'normalization.npz') as b:
+                for key in a.files:
+                    np.testing.assert_array_equal(a[key], b[key])
         matches.append(dict(directory=str(folder), shared_steps=length))
     receipt = dict(status='COMPLETE', fits=len(training['outputs']), component_models=len(components['models']),
         procedure_rows=len(pd.read_csv(output / 'procedures.csv')), component_rows=len(frame),
-        component_sum_max_error=max(errors), matched_sampling_and_normalization=matches)
+        component_sum_max_error=max(errors), matched_sampling=matches,
+        normalization_comparison='different_layer_inputs' if config.get('comparison_axis') == 'representation_layer' else 'exact')
     atomic_write_json(output / 'inspection.json', receipt)
     print(changes[changes.metric == 'recall'].to_string(index=False))
     print(representation.to_string(index=False))
