@@ -6,6 +6,18 @@ from torch.nn import functional as F
 METHODS = ("token_sparse", "mean_sparse", "token_dense", "mean_dense", "raw_supcon")
 
 
+def procedure_identity_loss(embeddings, labels, procedures, temperature):
+    logits = embeddings @ embeddings.T / temperature
+    diagonal = torch.eye(len(labels), dtype=torch.bool, device=labels.device)
+    positive = (labels[:, None] == labels[None, :]) & ~diagonal
+    same_procedure = procedures[:, None] == procedures[None, :]
+    if not positive.any(dim=1).all() or torch.any(positive & ~same_procedure):
+        raise ValueError("Each identity requires positive observations in the same procedure")
+    allowed = same_procedure & ~diagonal
+    log_probability = logits - torch.logsumexp(logits.masked_fill(~allowed, -torch.inf), dim=1, keepdim=True)
+    return -(torch.where(positive, log_probability, 0).sum(dim=1) / positive.sum(dim=1)).mean()
+
+
 def symmetric_maxsim(first, second):
     similarities = first @ second.transpose(-1, -2)
     return .5 * (similarities.amax(dim=-1).mean(dim=-1) +

@@ -19,7 +19,7 @@ from train_frozen_identity_supcon import supcon
 from verify_token_identity_sae import numpy_forward
 from analyze_temporal_identity_components import remove_components
 from src.checkpoint_io import atomic_write_json, read_json
-from src.token_identity_sae import TokenIdentitySAE
+from src.token_identity_sae import TokenIdentitySAE, procedure_identity_loss
 
 
 def verify(run, recovery, input_loader=load_inputs):
@@ -46,13 +46,20 @@ def verify(run, recovery, input_loader=load_inputs):
             scale = np.sqrt(np.maximum(np.mean(seconds, axis=0) - mean * mean, 0))
             scale[scale == 0] = 1
             selected = []
-            for indices in list(groups.values())[:2]:
+            selected_groups = list(groups.values())[:2]
+            if config.get('identity_negative_scope') == 'global_and_procedure':
+                video = next(video for video in fitting if sum(key[0] == video for key in groups) >= 2)
+                selected_groups = [indices for key, indices in groups.items() if key[0] == video][:2]
+                selected_groups.append(next(indices for key, indices in groups.items() if key[0] != video))
+            for indices in selected_groups:
                 first = indices[0]
                 second = next((i for i in indices if not local[i]['original_observation']), indices[-1])
                 selected.extend([first, second])
             samples = np.stack([values[np.linspace(bounds[i], bounds[i + 1] - 1, 8, dtype=int)] for i in selected])
             samples = (samples - mean) / scale
-            labels = torch.tensor([0, 0, 1, 1])
+            labels = torch.arange(len(selected_groups)).repeat_interleave(2)
+            procedure_names = sorted({local[i]['video_id'] for i in selected})
+            procedures = torch.tensor([procedure_names.index(local[i]['video_id']) for i in selected])
             for item in batch:
                 folder = Path(item['directory'])
                 with np.load(folder / 'normalization.npz', allow_pickle=False) as archive:
@@ -71,14 +78,26 @@ def verify(run, recovery, input_loader=load_inputs):
                 logits = expected @ expected.T / config['temperature']
                 np.fill_diagonal(logits, -np.inf)
                 probability = logits - logsumexp(logits, axis=1, keepdims=True)
-                positive = (labels.numpy()[:, None] == labels.numpy()[None, :]) & ~np.eye(4, dtype=bool)
+                positive = (labels.numpy()[:, None] == labels.numpy()[None, :]) & ~np.eye(len(selected), dtype=bool)
                 expected_loss = -np.mean(probability[positive])
+                if config.get('identity_negative_scope') == 'global_and_procedure':
+                    allowed = procedures.numpy()[:, None] == procedures.numpy()[None, :]
+                    conditional_logits = np.where(allowed, logits, -np.inf)
+                    conditional_probability = conditional_logits - logsumexp(conditional_logits, axis=1, keepdims=True)
+                    conditional_loss = -np.mean(conditional_probability[positive])
+                    expected_loss = .5 * (expected_loss + conditional_loss)
+                    singleton = procedures == procedures[-1]
+                    singleton_loss = procedure_identity_loss(actual[singleton], labels[singleton],
+                        procedures[singleton], config['temperature'])
+                    np.testing.assert_allclose(float(singleton_loss.detach()), 0, atol=1e-12)
                 if decoded is not None:
                     expected_loss += config['reconstruction_weight'] * np.mean((decoded - samples) ** 2)
 
                 def objective():
                     output, recreated, _ = model(torch.from_numpy(samples))
                     loss = supcon(output, labels, config['temperature'])
+                    if config.get('identity_negative_scope') == 'global_and_procedure':
+                        loss = .5 * (loss + procedure_identity_loss(output, labels, procedures, config['temperature']))
                     return loss + config['reconstruction_weight'] * (recreated - torch.from_numpy(samples)).square().mean() if recreated is not None else loss
 
                 loss = objective()

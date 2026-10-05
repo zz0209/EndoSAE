@@ -21,9 +21,13 @@ def compare(run, training_root):
         raise ValueError('Cohort comparisons have different evaluation units')
     delta = (second[metrics] - first[metrics]).reset_index()
     delta.to_csv(output / 'cohort_procedure_contrasts.csv', index=False)
-    combined = pd.concat([original.assign(training_procedures=19), current.assign(training_procedures=27)], ignore_index=True)
+    axis_name = config.get('comparison_axis', 'training_procedures')
+    levels = config.get('comparison_levels', [19, 27])
+    labels = config.get('comparison_labels', ['19 training procedures', '27 training procedures'])
+    combined = pd.concat([original.assign(**{axis_name: levels[0]}),
+                          current.assign(**{axis_name: levels[1]})], ignore_index=True)
     combined.to_csv(output / 'cohort_procedures.csv', index=False)
-    summary = combined.groupby(['partition', 'condition', 'method', 'training_procedures'], sort=False)[metrics].mean().reset_index()
+    summary = combined.groupby(['partition', 'condition', 'method', axis_name], sort=False)[metrics].mean().reset_index()
     summary.to_csv(output / 'cohort_summary.csv', index=False)
     delta.groupby(['partition', 'condition', 'method', 'seed'], sort=False)[metrics].mean().reset_index().to_csv(
         output / 'cohort_seed_contrasts.csv', index=False)
@@ -32,20 +36,21 @@ def compare(run, training_root):
         for column, condition in enumerate(config['conditions']):
             axis = axes[row, column]
             for index, method in enumerate(config['methods']):
-                for side, count in enumerate([19, 27]):
+                for side, count in enumerate(levels):
                     selected = combined[(combined.partition == partition) & (combined.condition == condition) &
-                        (combined.method == method) & (combined.training_procedures == count)]
+                        (combined.method == method) & (combined[axis_name] == count)]
                     values = selected.groupby('video_id').recall.mean()
                     x = index + (side - .5) * .36
                     axis.bar(x, values.mean(), width=.32, color=['#b7c2cb', '#197698'][side],
-                        label=f'{count} training procedures' if index == 0 else None)
+                        label=labels[side] if index == 0 else None)
                     axis.scatter([x] * len(values), values, s=14, color='#253645', alpha=.65, zorder=3)
             axis.set(xticks=range(3), xticklabels=['Direct SAE', 'Dense code', 'SupCon'], ylim=(0, 1.04),
                 ylabel='Same-lesion recall', title=('Grouped training' if row == 0 else 'Examined validation') +
                 (' / 4 observations per lesion' if column == 0 else ' / 32 observations per lesion'))
             if row == 0 and column == 0:
                 axis.legend(fontsize=8)
-    figure.suptitle('Unchanged evaluation procedures and observations; dots are procedure means across seeds\nLabel-informed 0.99 negative-quantile boundary; cohort extension changes quantity and composition')
+    figure.suptitle(config.get('comparison_figure_title',
+        'Unchanged evaluation procedures and observations; dots are procedure means across seeds\nLabel-informed 0.99 negative-quantile boundary; cohort extension changes quantity and composition'))
     figure.savefig(output / 'cohort_recall.png', dpi=160)
     plt.close(figure)
     atomic_write_json(output / 'cohort_comparison.json', dict(status='COMPLETE',

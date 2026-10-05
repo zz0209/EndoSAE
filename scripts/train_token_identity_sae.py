@@ -25,7 +25,7 @@ from train_frozen_identity_supcon import sample_batch, supcon
 from train_temporal_shared_sae import protected_statistics
 from src.checkpoint_io import atomic_write_json, pause_after_checkpoint, read_json
 from src.evaluation.realcolon_task import tokens_to_frames
-from src.token_identity_sae import METHODS, TokenIdentitySAE, local_identity_loss, symmetric_maxsim
+from src.token_identity_sae import METHODS, TokenIdentitySAE, local_identity_loss, procedure_identity_loss, symmetric_maxsim
 
 
 def source_identity():
@@ -233,6 +233,13 @@ def fit(config, method, seed, raw, offsets, records, fit_videos, held_videos, fo
     train_records = [dict(row, split="train" if row["video_id"] in fit_videos else "excluded") for row in records]
     label_map = {key: i for i, key in enumerate(sorted({(r["video_id"], r["lesion_id"]) for r in records}))}
     labels = torch.tensor([label_map[(r["video_id"], r["lesion_id"])] for r in records], device=config["device"])
+    negative_scope = config.get("identity_negative_scope", "global")
+    if negative_scope not in ("global", "global_and_procedure"):
+        raise ValueError("Unrecognized identity negative scope")
+    if negative_scope != "global" and config.get("identity_interaction", "pooled_cosine") != "pooled_cosine":
+        raise ValueError("Procedure objective requires pooled cosine")
+    procedure_map = {video: i for i, video in enumerate(sorted({r["video_id"] for r in records}))}
+    procedures = torch.tensor([procedure_map[r["video_id"]] for r in records], device=config["device"])
     torch.manual_seed(seed)
     model = TokenIdentitySAE(config, method).to(config["device"])
     optimizer = torch.optim.AdamW(model.parameters(), lr=config["learning_rate"], weight_decay=config["weight_decay"])
@@ -268,6 +275,11 @@ def fit(config, method, seed, raw, offsets, records, fit_videos, held_videos, fo
             identity_loss = local_identity_loss(model, local, labels[chosen], config["temperature"])
         else:
             identity_loss = supcon(projected, labels[chosen], config["temperature"])
+        global_identity_loss = identity_loss
+        procedure_loss = None
+        if negative_scope == "global_and_procedure":
+            procedure_loss = procedure_identity_loss(projected, labels[chosen], procedures[chosen], config["temperature"])
+            identity_loss = .5 * (identity_loss + procedure_loss)
         reconstruction_loss = (reconstruction - samples).square().mean() if reconstruction is not None else identity_loss.new_zeros(())
         loss = identity_loss + config["reconstruction_weight"] * reconstruction_loss
         if not torch.isfinite(loss):
@@ -281,6 +293,15 @@ def fit(config, method, seed, raw, offsets, records, fit_videos, held_videos, fo
         model.normalize_decoder()
         history.append(dict(step=step, loss=float(loss.detach()), identity=float(identity_loss.detach()),
                             reconstruction=float(reconstruction_loss.detach()), gradient_norm=float(norm)))
+        if procedure_loss is not None:
+            same_procedure = procedures[chosen, None] == procedures[None, chosen]
+            different_identity = labels[chosen, None] != labels[None, chosen]
+            history[-1].update(global_identity=float(global_identity_loss.detach()),
+                procedure_identity=float(procedure_loss.detach()),
+                within_procedure_negatives=int((same_procedure & different_identity).sum()),
+                cross_procedure_negatives=int((~same_procedure).sum()),
+                anchors_with_procedure_negatives=int((same_procedure & different_identity).any(dim=1).sum()),
+                anchors=len(chosen))
         if step in checkpoints:
             result = evaluate(model, values, offsets, records, held_videos, folder, f"held_{step:04d}", config)
             evaluations.append(dict(step=step, **result))
