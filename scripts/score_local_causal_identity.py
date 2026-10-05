@@ -20,8 +20,13 @@ from verify_token_identity_sae import numpy_forward
 
 
 @torch.no_grad()
-def vectors(model, mean, scale, raw, device):
+def vectors(model, mean, scale, raw, device, pooled_only=False):
     values = ((raw.astype(float) - mean) / scale).astype(np.float32)
+    if pooled_only:
+        pooled = model(torch.from_numpy(values[None]).to(device))[0][0]
+        if not torch.isfinite(pooled).all() or not torch.isclose(pooled.norm(), pooled.new_tensor(1.), atol=1e-5):
+            raise ValueError('Invalid pooled identity vector')
+        return None, pooled.cpu().numpy().astype(float)
     code = model.encode(torch.from_numpy(values).to(device))
     projected = model.readout(code)
     if not torch.isfinite(projected).all() or torch.any(projected.norm(dim=-1) <= 0):
@@ -37,7 +42,9 @@ def score(run, smoke, resume, output):
     torch.backends.cudnn.allow_tf32 = False
     device = torch.device(config['device'])
     root = output or (run / 'smoke_encoding' if smoke else Path(config['embedding_root']))
-    raw_root = run / 'smoke_raw' if smoke else Path(config['raw_root'])
+    raw_root = Path(config.get('smoke_raw_root', run / 'smoke_raw')) if smoke else Path(config['raw_root'])
+    pooled_only = config.get('pooled_only', False)
+    modes = ['pooled_cosine'] if pooled_only else ['pooled_cosine', 'symmetric_maxsim']
     root.mkdir(parents=True, exist_ok=True)
     models = load_models(config, device)
     videos = [config['development_videos'][0], config['extension_videos'][0]] if smoke else config['development_videos'] + config['extension_videos']
@@ -72,7 +79,7 @@ def score(run, smoke, resume, output):
                 with np.load(source / 'observed_tokens.npz') as saved:
                     raw = saved['tokens'].copy()
                 sources[identifier] = dict(position=position, raw=raw,
-                    vectors={key: vectors(model, mean, scale, raw, device) for key, (model, mean, scale) in models.items()})
+                    vectors={key: vectors(model, mean, scale, raw, device, pooled_only) for key, (model, mean, scale) in models.items()})
         identity = dict(files=code_identity, smoke=smoke, video=video,
             raw_receipt_sha256=digest(raw_root / video / 'complete.json'),
             sources={str(p): digest(p) for p in source_files})
@@ -96,7 +103,7 @@ def score(run, smoke, resume, output):
             target.mkdir(parents=True, exist_ok=True)
             for key in models:
                 method, seed = key.rsplit('_seed', 1)
-                for mode in ['pooled_cosine', 'symmetric_maxsim']:
+                for mode in modes:
                     path = target / f'{method}_{mode}_seed{seed}.npy'
                     value = np.lib.format.open_memmap(path, mode='r+' if path.exists() else 'w+', dtype=np.float64, shape=available.shape)
                     if previous['shards'] == 0:
@@ -117,25 +124,28 @@ def score(run, smoke, resume, output):
                 raw = raw_values[offsets[i]:offsets[i + 1]]
                 for key, (model, mean, scale) in models.items():
                     start = time.perf_counter()
-                    local, pooled = vectors(model, mean, scale, raw, device)
+                    local, pooled = vectors(model, mean, scale, raw, device, pooled_only)
                     if key in original_vectors:
                         np.testing.assert_allclose(pooled, original_vectors[key][position], atol=2e-6, rtol=0)
                     for identifier, source in sources.items():
                         source_local, source_pooled = source['vectors'][key]
                         arrays[identifier, key, 'pooled_cosine'][position] = np.clip(pooled @ source_pooled, -1., 1.)
-                        arrays[identifier, key, 'symmetric_maxsim'][position] = np.clip(float(symmetric_maxsim(local, source_local)), -1., 1.)
+                        if not pooled_only:
+                            arrays[identifier, key, 'symmetric_maxsim'][position] = np.clip(float(symmetric_maxsim(local, source_local)), -1., 1.)
                     timings[key] += time.perf_counter() - start
                     if smoke and not any(c['model'] == key for c in checks):
                         definition = read_json(dict(model_specs(config))[key] / 'model_config.json')
                         independent = TokenIdentitySAE(definition, model.method).double().eval()
                         independent.load_state_dict({k: v.detach().cpu().double() for k, v in model.state_dict().items()})
-                        expected, _ = numpy_forward(independent, ((raw.astype(float) - mean) / scale)[None], 'symmetric_maxsim')
-                        np.testing.assert_allclose(local.cpu().numpy(), expected[0], atol=2e-5, rtol=1e-4)
+                        interaction = 'pooled_cosine' if pooled_only else 'symmetric_maxsim'
+                        expected, _ = numpy_forward(independent, ((raw.astype(float) - mean) / scale)[None], interaction)
+                        observed_vectors = pooled if pooled_only else local.cpu().numpy()
+                        np.testing.assert_allclose(observed_vectors, expected[0], atol=2e-5, rtol=1e-4)
                         identifier, source = next(iter(sources.items()))
-                        expected_source, _ = numpy_forward(independent, ((source['raw'].astype(float) - mean) / scale)[None], 'symmetric_maxsim')
+                        expected_source, _ = numpy_forward(independent, ((source['raw'].astype(float) - mean) / scale)[None], interaction)
                         matrix = expected[0] @ expected_source[0].T
-                        target = .5 * (matrix.max(0).mean() + matrix.max(1).mean())
-                        observed = arrays[identifier, key, 'symmetric_maxsim'][position]
+                        target = float(matrix) if pooled_only else .5 * (matrix.max(0).mean() + matrix.max(1).mean())
+                        observed = arrays[identifier, key, interaction][position]
                         np.testing.assert_allclose(observed, target, atol=2e-6, rtol=0)
                         checks.append(dict(model=key, actual_position=int(position), source=identifier,
                                            numpy_score_error=abs(float(observed) - target)))

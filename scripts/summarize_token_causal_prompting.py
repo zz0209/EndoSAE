@@ -60,7 +60,7 @@ def summarize(run, smoke):
             differences.append(dict(comparison=left + '_minus_' + right, population=row['population'],
                 seed=row['seed'], video=row['video'], **{key: row[key + '_left'] - row[key + '_right'] for key in METRICS}))
     pd.DataFrame(differences).to_csv(output / 'paired_differences.csv', index=False)
-    fig, axes = plt.subplots(2, 3, figsize=(18, 9) if len(names) > 5 else (15, 7), sharey=True)
+    fig, axes = plt.subplots(2, 3, figsize=(20, 12) if len(names) > 10 else (18, 9) if len(names) > 5 else (15, 7), sharey=True)
     colors = ['#0072B2', '#D55E00', '#009E73']
     labels = ([config['method_labels'][name] for name in names] if 'method_labels' in config else
               ['Ordinary SupCon', 'Projected sparse', 'Projected dense', 'Direct sparse', 'Direct dense'])
@@ -77,6 +77,8 @@ def summarize(run, smoke):
             ax.set_yticks(range(len(names)), labels)
             ax.set_title(('Development' if i == 0 else 'Examined extension') + ' | ' + metric.replace('_', ' '))
             ax.set_xlabel('Percent')
+            if metric == 'first_prompt':
+                ax.set_xlim(0, 100)
             ax.grid(axis='x', alpha=.2)
             ax.spines[['right', 'top']].set_visible(False)
     fig.suptitle(config.get('figure_title', 'Token identity in causal prompting') + (' | real interface smoke' if smoke else ''))

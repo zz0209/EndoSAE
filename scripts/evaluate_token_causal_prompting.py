@@ -86,12 +86,13 @@ def evaluate_phase(run, config, output, root, seed, phase, points, smoke, resume
                     else:
                         assert np.isnan(score).all()
                     scores[name] = score
-                for method in config['methods']:
+                for method in config['methods'] if 'reference_application' in config else []:
                     key = f'pooled_{method}_pooled_cosine'
                     old = Path(config['reference_application']) / 'evaluation' / f'seed{seed}' / phase / video / 'sources' / episode['episode_id'] / 'scores.npz'
                     with np.load(old) as original:
                         np.testing.assert_allclose(scores[key][encoded], original[f'projected_{method}'][encoded], atol=2e-6, rtol=0)
-                checks['pooled_reference'] = dict(saved_scores_reproduced=True, tolerance=2e-6)
+                if 'reference_application' in config:
+                    checks['pooled_reference'] = dict(saved_scores_reproduced=True, tolerance=2e-6)
             for name, value in codes.items():
                 score = np.full(len(raw), np.nan)
                 if source_available:
