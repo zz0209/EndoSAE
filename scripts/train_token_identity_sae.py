@@ -284,6 +284,9 @@ def fit(config, method, seed, raw, offsets, records, fit_videos, held_videos, fo
         if step in checkpoints:
             result = evaluate(model, values, offsets, records, held_videos, folder, f"held_{step:04d}", config)
             evaluations.append(dict(step=step, **result))
+            if config.get("save_evaluation_models", False):
+                shared.save_npz(folder / f"model_{step:04d}.npz",
+                    **{key: value.detach().cpu().numpy() for key, value in model.state_dict().items()})
         if step % config["checkpoint_every"] == 0 or step in checkpoints or step == steps or step == stop_after:
             elapsed = previous + time.perf_counter() - started
             shared.save_torch(checkpoint, dict(identity_sha256=signature, model=model.state_dict(), optimizer=optimizer.state_dict(),
