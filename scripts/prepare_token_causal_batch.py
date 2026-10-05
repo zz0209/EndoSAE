@@ -13,9 +13,24 @@ def prepare(run):
     assert smoke['status'] == evaluation['status'] == 'COMPLETE'
     counts = {video: len(video_inputs(config, video)[5]) for video in config['development_videos'] + config['extension_videos']}
     total = sum(counts.values())
-    seconds = sum(row['seconds'] for row in smoke['videos']) / smoke['total_native_outputs'] * total
     python = str(ROOT / 'artifacts/environments/modern/Scripts/python.exe')
-    stages = [dict(id='encode', label='完整视频 · 实际观察的局部成分编码', kind='encode',
+    if config.get('precomputed_scores', False):
+        cached = read_json(run / 'smoke_cache_summary.json')
+        assert cached['status'] == 'COMPLETE'
+        seconds = cached['seconds'] / cached['total_native_outputs'] * total
+        detections = sum(int(video_inputs(config, video)[4].sum()) for video in counts)
+        scoring_seconds = sum(row['seconds'] for row in smoke['videos']) / smoke['total_detections'] * detections
+        stages = [dict(id='cache', label='完整视频 · 因果局部token缓存', kind='encode',
+            command=[python, 'scripts/cache_causal_roi_tokens.py', '--run', str(run), '--resume'],
+            progress=str(run / 'cache_progress.json'), output=str(run / 'cache_summary.json'),
+            units=total, unit='个视频时点', estimate_seconds=seconds, resources=['disk-e-io', 'disk-d-io', 'gpu-0']),
+            dict(id='score', label='固定模型 · 局部对应与平均评分', kind='encode',
+            command=[python, 'scripts/score_local_causal_identity.py', '--run', str(run), '--resume'],
+            progress=str(run / 'encoding_progress.json'), output=str(run / 'encoding_summary.json'),
+            units=detections, unit='个实际检测', estimate_seconds=scoring_seconds, resources=['disk-e-io', 'disk-d-io', 'gpu-0'])]
+    else:
+        seconds = sum(row['seconds'] for row in smoke['videos']) / smoke['total_native_outputs'] * total
+        stages = [dict(id='encode', label='完整视频 · 实际观察的局部成分编码', kind='encode',
         command=[python, 'scripts/encode_token_causal_identity.py', '--run', str(run), '--resume'],
         progress=str(run / 'encoding_progress.json'), output=str(run / 'encoding_summary.json'),
         units=total, unit='个视频时点', estimate_seconds=seconds, resources=['disk-e-io', 'disk-d-io', 'gpu-0'])]

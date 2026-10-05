@@ -25,7 +25,7 @@ from train_frozen_identity_supcon import sample_batch, supcon
 from train_temporal_shared_sae import protected_statistics
 from src.checkpoint_io import atomic_write_json, pause_after_checkpoint, read_json
 from src.evaluation.realcolon_task import tokens_to_frames
-from src.token_identity_sae import METHODS, TokenIdentitySAE
+from src.token_identity_sae import METHODS, TokenIdentitySAE, local_identity_loss, symmetric_maxsim
 
 
 def source_identity():
@@ -166,13 +166,19 @@ def normalize(raw, offsets, records, videos):
 def evaluate(model, values, offsets, records, videos, folder, stem, config):
     model.eval()
     indices = [i for i, row in enumerate(records) if row["video_id"] in videos]
-    embeddings, metadata, codes = {}, [], []
+    embeddings, metadata, codes, local_vectors = {}, [], [], {}
+    interaction = config.get("identity_interaction", "pooled_cosine")
     for index in indices:
         tokens = values[offsets[index]:offsets[index + 1]][None]
         projected, decoded, local = model(tokens)
         if not torch.isfinite(projected).all() or torch.any(projected.norm(dim=-1) <= 0):
             raise ValueError("Invalid held identity embedding")
         embeddings[index] = projected[0].cpu().numpy()
+        if interaction == "symmetric_maxsim":
+            vectors = model.readout(local)[0]
+            if not torch.isfinite(vectors).all() or torch.any(vectors.norm(dim=-1) <= 0):
+                raise ValueError("Invalid held local identity vector")
+            local_vectors[index] = F.normalize(vectors, dim=-1)
         row = dict(index=index, video_id=records[index]["video_id"], tokens=tokens.shape[1])
         if local is not None:
             token_code = local.mean(dim=1)
@@ -185,7 +191,11 @@ def evaluate(model, values, offsets, records, videos, folder, stem, config):
             codes.append(pooled[0].cpu().numpy())
         metadata.append(row)
     pairs = shared.chronological_pairs(records, videos)
-    scores = np.array([float(embeddings[row["source_index"]] @ embeddings[row["query_index"]]) for row in pairs])
+    if interaction == "symmetric_maxsim":
+        scores = np.array([float(symmetric_maxsim(local_vectors[row["source_index"]],
+            local_vectors[row["query_index"]])) for row in pairs])
+    else:
+        scores = np.array([float(embeddings[row["source_index"]] @ embeddings[row["query_index"]]) for row in pairs])
     report = protected_statistics(pairs, scores, config["negative_quantile"])
     labels = np.array([row["same_identity"] for row in pairs])
     cross = labels & ~np.array([row["same_annotation_interval"] for row in pairs])
@@ -254,7 +264,10 @@ def fit(config, method, seed, raw, offsets, records, fit_videos, held_videos, fo
         sequence.append(dict(indices=chosen.tolist(), tokens_sha256=hashlib.sha256(token_indices.tobytes()).hexdigest()))
         samples = values[torch.from_numpy(token_indices).to(config["device"])]
         projected, reconstruction, local = model(samples)
-        identity_loss = supcon(projected, labels[chosen], config["temperature"])
+        if config.get("identity_interaction", "pooled_cosine") == "symmetric_maxsim":
+            identity_loss = local_identity_loss(model, local, labels[chosen], config["temperature"])
+        else:
+            identity_loss = supcon(projected, labels[chosen], config["temperature"])
         reconstruction_loss = (reconstruction - samples).square().mean() if reconstruction is not None else identity_loss.new_zeros(())
         loss = identity_loss + config["reconstruction_weight"] * reconstruction_loss
         if not torch.isfinite(loss):
@@ -300,7 +313,12 @@ def fit(config, method, seed, raw, offsets, records, fit_videos, held_videos, fo
 
 def train(run, smoke, resume, output, stop_after):
     config, cohort, raw, offsets, records, receipts = load_inputs(run)
-    if tuple(config["methods"]) != METHODS:
+    methods = tuple(config["methods"])
+    interaction = config.get("identity_interaction", "pooled_cosine")
+    if interaction not in ("pooled_cosine", "symmetric_maxsim"):
+        raise ValueError("Unrecognized identity interaction")
+    expected = ("token_sparse", "token_dense") if interaction == "symmetric_maxsim" else METHODS
+    if methods != expected:
         raise ValueError("Unrecognized formal method roster")
     torch.set_num_threads(config["threads"])
     torch.use_deterministic_algorithms(True)
@@ -317,10 +335,10 @@ def train(run, smoke, resume, output, stop_after):
     active_folds = folds[:1] if smoke else folds
     steps = config["smoke_steps"] if smoke else config["steps"]
     checkpoints = [steps] if smoke else config["checkpoints"]
-    total = len(seeds) * len(METHODS) * (len(active_folds) + 1)
+    total = len(seeds) * len(methods) * (len(active_folds) + 1)
     outputs, selections = [], []
     for seed in seeds:
-        for method in METHODS:
+        for method in methods:
             inner = []
             for fold, held in enumerate(active_folds):
                 folder = root / "inner" / method / f"seed{seed}" / f"fold{fold}"

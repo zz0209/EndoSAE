@@ -17,10 +17,10 @@ sys.path.insert(0, str(ROOT))
 from train_token_identity_sae import load_inputs, normalize
 from train_frozen_identity_supcon import supcon
 from src.checkpoint_io import atomic_write_json, read_json
-from src.token_identity_sae import METHODS, TokenIdentitySAE
+from src.token_identity_sae import TokenIdentitySAE, local_identity_loss, symmetric_maxsim
 
 
-def numpy_forward(model, values):
+def numpy_forward(model, values, interaction="pooled_cosine"):
     weights = {key: value.detach().numpy() for key, value in model.state_dict().items()}
     if model.method == "raw_supcon":
         hidden = np.maximum(values.mean(1) @ weights["projection.0.weight"].T + weights["projection.0.bias"], 0)
@@ -39,7 +39,8 @@ def numpy_forward(model, values):
 
     local = encode(values)
     pooled = local.mean(1) if model.method.startswith("token_") else encode(values.mean(1))
-    output = pooled @ weights["readout.weight"].T if model.identity_space == "projected" else pooled
+    identity_input = local if interaction == "symmetric_maxsim" else pooled
+    output = identity_input @ weights["readout.weight"].T if model.identity_space == "projected" else identity_input
     decoded = local @ weights["decoder.weight"].T + weights["decoder.bias"]
     return output / np.linalg.norm(output, axis=-1, keepdims=True), decoded
 
@@ -62,7 +63,8 @@ def verify(run, output, recovery):
     identity = np.array([0, 0, 1, 1])
     checks = []
     initial_states = []
-    for method in METHODS:
+    interaction = config.get("identity_interaction", "pooled_cosine")
+    for method in config["methods"]:
         torch.manual_seed(config["seeds"][0])
         initial = TokenIdentitySAE(config, method)
         if method != "raw_supcon":
@@ -71,12 +73,24 @@ def verify(run, output, recovery):
         model = TokenIdentitySAE(config, method).double()
         with np.load(folder / "model.npz", allow_pickle=False) as archive:
             model.load_state_dict({key: torch.from_numpy(archive[key].copy()) for key in archive.files})
-        expected, decoded = numpy_forward(model, samples)
+        expected, decoded = numpy_forward(model, samples, interaction)
         actual, reconstruction, code = model(values)
+        if interaction == "symmetric_maxsim":
+            actual = torch.nn.functional.normalize(model.readout(code), dim=-1)
         np.testing.assert_allclose(actual.detach().numpy(), expected, atol=1e-11, rtol=1e-10)
         if decoded is not None:
             np.testing.assert_allclose(reconstruction.detach().numpy(), decoded, atol=1e-11, rtol=1e-10)
-        logits = expected @ expected.T / config["temperature"]
+        if interaction == "symmetric_maxsim":
+            scores = np.empty((len(expected), len(expected)))
+            for i, first in enumerate(expected):
+                for j, second in enumerate(expected):
+                    similarities = first @ second.T
+                    scores[i, j] = .5 * (similarities.max(axis=1).mean() + similarities.max(axis=0).mean())
+            observed = symmetric_maxsim(actual[:, None], actual[None, :]).detach().numpy()
+            np.testing.assert_allclose(observed, scores, atol=1e-11, rtol=1e-10)
+            logits = scores / config["temperature"]
+        else:
+            logits = expected @ expected.T / config["temperature"]
         np.fill_diagonal(logits, -np.inf)
         log_prob = logits - logsumexp(logits, axis=1, keepdims=True)
         positive = (identity[:, None] == identity[None, :]) & ~np.eye(len(identity), dtype=bool)
@@ -85,8 +99,9 @@ def verify(run, output, recovery):
         expected_loss = expected_identity + config["reconstruction_weight"] * expected_reconstruction
 
         def objective():
-            projected, recreated, _ = model(values)
-            result = supcon(projected, labels, config["temperature"])
+            projected, recreated, local = model(values)
+            result = (local_identity_loss(model, local, labels, config["temperature"])
+                if interaction == "symmetric_maxsim" else supcon(projected, labels, config["temperature"]))
             return result + config["reconstruction_weight"] * (recreated - values).square().mean() if recreated is not None else result
 
         loss = objective()

@@ -66,6 +66,8 @@ def summarize(run, training_root, output):
     contrasts = []
     for first, second in [("token_sparse", "mean_sparse"), ("token_dense", "mean_dense"),
                           ("token_sparse", "token_dense"), ("token_sparse", "raw_supcon")]:
+        if first not in config["methods"] or second not in config["methods"]:
+            continue
         reference = {(r["partition"], r["seed"], r["video_id"]): r for r in procedures if r["method"] == second}
         for row in procedures:
             if row["method"] != first:
@@ -78,7 +80,9 @@ def summarize(run, training_root, output):
     table(output / "paired_differences.csv", contrasts)
     plt.rcParams.update({"font.size": 10, "axes.spines.top": False, "axes.spines.right": False})
     fig, axes = plt.subplots(1, 3, figsize=(14, 4.6), layout="constrained")
-    labels = ["Token\nSAE", "Mean\nSAE", "Token\ndense", "Mean\ndense", "Ordinary\nSupCon"]
+    names = dict(token_sparse="Token\nSAE", mean_sparse="Mean\nSAE", token_dense="Token\ndense",
+                 mean_dense="Mean\ndense", raw_supcon="Ordinary\nSupCon")
+    labels = [names[method] for method in config["methods"]]
     for axis, (metric, title) in zip(axes, [("recall", "Same-lesion recall"),
             ("cross_interval_recall", "Cross-interval recall"), ("auroc", "Within-procedure AUROC")], strict=True):
         for i, method in enumerate(config["methods"]):
@@ -87,12 +91,15 @@ def summarize(run, training_root, output):
             per_video = [np.mean([row[metric] for row in data if row["video_id"] == video]) for video in videos]
             axis.bar(i, np.mean(per_video), color="#176B87" if method == "token_sparse" else "#BAC6CE", width=.65)
             axis.scatter(i + np.linspace(-.18, .18, len(videos)), per_video, s=19, color="#303A45", zorder=3)
-        axis.set_xticks(range(5), labels)
+        axis.set_xticks(range(len(labels)), labels)
         axis.set_ylim(0, 1.04)
         axis.set_title(title)
         axis.grid(axis="y", alpha=.2)
         axis.set_axisbelow(True)
-    fig.suptitle("Local evidence before pooling — exposed validation procedures\nBars: procedure means; dots: individual procedures averaged across seeds", fontsize=12)
+    title = "Local interaction training" if config.get("identity_interaction") == "symmetric_maxsim" else "Local evidence before pooling"
+    if training_root.name == "smoke":
+        title = "Technical smoke: " + title
+    fig.suptitle(title + " — exposed validation procedures\nBars: procedure means; dots: individual procedures averaged across seeds", fontsize=12)
     fig.savefig(output / "identity_comparison.png", dpi=170)
     plt.close(fig)
     lines = ["# Local token evidence experiment", "", "All validation procedures have prior development exposure. The training-fold rows include checkpoint selection. These are GT-region identity results; no complete-video prompt benefit is inferred.", "",

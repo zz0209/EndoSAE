@@ -19,10 +19,12 @@ from src.evaluation.realcolon_task import digest
 
 
 def methods(config):
+    if 'score_methods' in config:
+        return config['score_methods']
     return [f'{space}_{method}' for space in config['training_runs'] for method in config['methods']]
 
 
-def evaluate_phase(run, config, output, root, seed, phase, points, smoke, resume):
+def evaluate_phase(run, config, output, root, seed, phase, points, smoke, resume, score_transform=None):
     base = Path(config[phase + '_base'])
     settings = read_json(base / 'config.json')
     videos = config[phase + '_videos'][:1] if smoke else config[phase + '_videos']
@@ -39,7 +41,8 @@ def evaluate_phase(run, config, output, root, seed, phase, points, smoke, resume
         assert not np.any(encoded & ~available)
         if not smoke:
             np.testing.assert_array_equal(encoded, available)
-        codes = {name: np.load(root / video / f'{name}_seed{seed}.npy', mmap_mode='r') for name in methods(config)}
+        codes = {} if config.get('precomputed_scores', False) else {
+            name: np.load(root / video / f'{name}_seed{seed}.npy', mmap_mode='r') for name in methods(config)}
         for value in codes.values():
             assert len(value) == len(raw) and np.isfinite(value[encoded]).all()
             np.testing.assert_allclose(np.linalg.norm(value[encoded], axis=1), 1., atol=1e-5)
@@ -73,6 +76,22 @@ def evaluate_phase(run, config, output, root, seed, phase, points, smoke, resume
             with np.load(stored / 'cosines.npz') as original:
                 scores = dict(reference_supcon=original['track__supcon_l2'].copy())
             checks = {}
+            if config.get('precomputed_scores', False):
+                for name in methods(config):
+                    score = np.load(root / video / 'sources' / episode['episode_id'] / f'{name}_seed{seed}.npy').copy()
+                    assert score.shape == (len(raw),)
+                    if source_available:
+                        assert np.isfinite(score[encoded]).all() and np.isnan(score[~encoded]).all()
+                        assert np.isclose(score[position], 1., atol=2e-5)
+                    else:
+                        assert np.isnan(score).all()
+                    scores[name] = score
+                for method in config['methods']:
+                    key = f'pooled_{method}_pooled_cosine'
+                    old = Path(config['reference_application']) / 'evaluation' / f'seed{seed}' / phase / video / 'sources' / episode['episode_id'] / 'scores.npz'
+                    with np.load(old) as original:
+                        np.testing.assert_allclose(scores[key][encoded], original[f'projected_{method}'][encoded], atol=2e-6, rtol=0)
+                checks['pooled_reference'] = dict(saved_scores_reproduced=True, tolerance=2e-6)
             for name, value in codes.items():
                 score = np.full(len(raw), np.nan)
                 if source_available:
@@ -82,6 +101,8 @@ def evaluate_phase(run, config, output, root, seed, phase, points, smoke, resume
                     assert np.isclose(score[position], 1., atol=1e-5)
                     checks[name] = dict(queries=int(encoded.sum()), source_position=position, self_score=float(score[position]))
                 scores[name] = score
+            if score_transform is not None:
+                scores, checks['score_transform'] = score_transform(scores, codes, directory, position, source_available)
             summaries, fixed, keeps = {}, {}, {}
             for name in names:
                 threshold = points[name]['threshold'] if points else None
@@ -89,7 +110,7 @@ def evaluate_phase(run, config, output, root, seed, phase, points, smoke, resume
                     offsets, records, frames, data, episode['source_lesion_id'], first, receipt['fps'])
                 for group, columns in episode['groups'].items():
                     curve[group + '_lesion_columns'] = np.asarray(columns, dtype=int)
-                if phase == 'development' and name == 'reference_supcon':
+                if phase == 'development' and name == 'reference_supcon' and score_transform is None:
                     with np.load(stored / 'track__supcon_l2_curve.npz') as reference:
                         for key in ['threshold', 'acknowledged_removed_seconds', 'retained_baseline_seconds',
                                     'first_postclick_correct_prompt_time']:

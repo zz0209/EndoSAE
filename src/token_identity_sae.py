@@ -6,6 +6,23 @@ from torch.nn import functional as F
 METHODS = ("token_sparse", "mean_sparse", "token_dense", "mean_dense", "raw_supcon")
 
 
+def symmetric_maxsim(first, second):
+    similarities = first @ second.transpose(-1, -2)
+    return .5 * (similarities.amax(dim=-1).mean(dim=-1) +
+                 similarities.amax(dim=-2).mean(dim=-1))
+
+
+def local_identity_loss(model, local, labels, temperature):
+    vectors = F.normalize(model.readout(local), dim=-1)
+    scores = symmetric_maxsim(vectors[:, None], vectors[None, :]) / temperature
+    diagonal = torch.eye(len(labels), dtype=torch.bool, device=labels.device)
+    positive = (labels[:, None] == labels[None, :]) & ~diagonal
+    if not positive.any(dim=1).all():
+        raise ValueError("Each observation requires a positive identity pair")
+    log_probability = scores - torch.logsumexp(scores.masked_fill(diagonal, -torch.inf), dim=1, keepdim=True)
+    return -(torch.where(positive, log_probability, 0).sum(dim=1) / positive.sum(dim=1)).mean()
+
+
 class TokenIdentitySAE(nn.Module):
     def __init__(self, config, method):
         super().__init__()
