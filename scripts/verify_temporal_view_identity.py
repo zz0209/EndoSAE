@@ -22,9 +22,9 @@ from src.checkpoint_io import atomic_write_json, read_json
 from src.token_identity_sae import TokenIdentitySAE
 
 
-def verify(run, recovery):
+def verify(run, recovery, input_loader=load_inputs):
     torch.set_num_threads(1)
-    config, cohort, raw, offsets, records, _ = load_inputs(run)
+    config, cohort, raw, offsets, records, _ = input_loader(run)
     smoke = read_json(run / 'smoke' / 'training_summary.json')
     checks, normalization_checks, restored = [], [], 0
     pair_rosters = {}
@@ -129,7 +129,7 @@ def verify(run, recovery):
         with np.load(directory / 'effects.npz', allow_pickle=False) as archive:
             sparse = archive['unit_codes'].copy()
             indices = archive['indices'].copy()
-            unit = np.zeros((336, sparse.shape[1]))
+            unit = np.zeros((sum(row['original_observation'] for row in records), sparse.shape[1]))
             unit[indices] = sparse
             for scope in ['fit', 'held']:
                 source, query = archive[f'{scope}_source'], archive[f'{scope}_query']

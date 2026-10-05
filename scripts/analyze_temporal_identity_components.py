@@ -34,6 +34,15 @@ def original_inputs(config):
             bounds.extend((offsets[1:] + bounds[-1]).tolist())
     if len(records) != 336:
         raise ValueError('Original evaluation observation roster changed')
+    for video in config.get('added_training_videos', []):
+        value, offsets, local, _ = read_tokens(Path(config['added_training_storage']) / 'tokens' / video)
+        for index, row in enumerate(local):
+            if row['original_observation']:
+                records.append(dict(row, partition='train', global_index=len(records)))
+                chunks.append(value[offsets[index]:offsets[index + 1]])
+                bounds.append(bounds[-1] + offsets[index + 1] - offsets[index])
+    if len(records) != 336 + config.get('added_original_observations', 0):
+        raise ValueError('Added component fitting observations differ')
     return np.concatenate(chunks), np.asarray(bounds), records
 
 

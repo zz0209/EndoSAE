@@ -107,8 +107,8 @@ def job_inputs(raw, offsets, records, fitting, condition):
     return values, bounds, local
 
 
-def train(run, smoke, resume, output, stop_after):
-    config, cohort, raw, offsets, records, receipts = load_inputs(run)
+def train(run, smoke, resume, output, stop_after, input_loader=load_inputs, source_reader=source_identity):
+    config, cohort, raw, offsets, records, receipts = input_loader(run)
     if config['methods'] != ['token_sparse', 'token_dense', 'raw_supcon']:
         raise ValueError('Unexpected method roster')
     torch.set_num_threads(config['threads'])
@@ -117,17 +117,19 @@ def train(run, smoke, resume, output, stop_after):
     torch.backends.cudnn.allow_tf32 = False
     root = output or (run / 'smoke' if smoke else run)
     root.mkdir(parents=True, exist_ok=True)
-    sources = source_identity()
+    sources = source_reader()
     identity = dict(input_sha256=shared.json_digest(receipts), source_hashes=sources)
     originals = [row for row in records if row['original_observation']]
-    folds = shared.make_folds(originals, cohort['fit_video_ids']['train'], config['inner_folds'], config['fold_seed'])
+    fold_videos = config.get('fold_training_videos', cohort['fit_video_ids']['train'])
+    folds = shared.make_folds(originals, fold_videos, config['inner_folds'], config['fold_seed'])
     reference = read_json(Path(config['original_prepared_run']) / 'folds.json')
     if folds != reference:
         raise ValueError('Fixed procedure folds changed')
     atomic_write_json(root / 'records.json', records)
     atomic_write_json(root / 'folds.json', folds)
     atomic_write_json(root / 'input_identity.json', dict(identity, original_arrays_exact=244,
-        train_observations=1952, validation_observations=92, tokens=len(raw)))
+        train_observations=sum(row['partition'] == 'train' for row in records),
+        validation_observations=sum(row['partition'] == 'val' for row in records), tokens=len(raw)))
     seeds = config['seeds'][:1] if smoke else config['seeds']
     active_folds = folds[:1] if smoke else folds
     steps = config['smoke_steps'] if smoke else config['steps']
@@ -188,7 +190,7 @@ def train(run, smoke, resume, output, stop_after):
                 length = min(map(len, sequences))
                 if any(sequence[:length] != sequences[0][:length] for sequence in sequences):
                     raise ValueError('Matched methods received different observations')
-    if sources != source_identity():
+    if sources != source_reader():
         raise ValueError('Training sources changed')
     atomic_write_json(root / 'training_summary.json', dict(status='COMPLETE', outputs=outputs,
         selection=selections, **identity))
