@@ -18,11 +18,12 @@ from src.evaluation.realcolon_task import digest
 
 
 @torch.no_grad()
-def pool(model, mean, scale, raw, device, verify=False):
+def pool(model, mean, scale, raw, device, verify=False, model_precision=False):
     values = ((raw.astype(float) - mean) / scale).astype(np.float32)
     code = model.encode(torch.from_numpy(values).to(device))
     assert model.identity_space == 'code'
-    assert torch.isfinite(code).all() and torch.all(code.norm(dim=1) > 0)
+    assert torch.isfinite(code).all() and torch.any(code.norm(dim=1) > 0)
+    zero_tokens = int((code.norm(dim=1) == 0).sum())
     unit = F.normalize(code.double(), dim=1)
     count, dimension = unit.shape
     # GMP ridge is fixed to one for a unit-diagonal Gram matrix.
@@ -37,19 +38,23 @@ def pool(model, mean, scale, raw, device, verify=False):
         weights = 1. - unit @ aggregate
     unit_mean = unit.mean(0)
     response_mean, response_gmp = unit @ F.normalize(unit_mean, dim=0), unit @ F.normalize(aggregate, dim=0)
+    if model_precision:
+        unit_mean, aggregate_output = unit_mean.to(code.dtype), aggregate.to(code.dtype)
+    else:
+        aggregate_output = aggregate
     result = dict(mean=F.normalize(code.mean(0), dim=0), unit_mean=F.normalize(unit_mean, dim=0),
-                  gmp=F.normalize(aggregate, dim=0))
+                  gmp=F.normalize(aggregate_output, dim=0))
     result = {key: value.cpu().numpy().astype(float) for key, value in result.items()}
     assert all(np.isfinite(v).all() and np.isclose(np.linalg.norm(v), 1., atol=2e-6) for v in result.values())
     residual = float((aggregate - unit.T @ (1. - unit @ aggregate)).abs().max())
     assert residual < 1e-7
-    stats = dict(tokens=count, negative_weight_fraction=float((weights < 0).double().mean()),
+    stats = dict(tokens=count, zero_tokens=zero_tokens, negative_weight_fraction=float((weights < 0).double().mean()),
                  mean_response_cv=float(response_mean.std(correction=0) / response_mean.mean().abs()),
                  gmp_response_cv=float(response_gmp.std(correction=0) / response_gmp.mean().abs()),
                  mean_gmp_cosine=float(result['mean'] @ result['gmp']), equation_residual=residual)
     if verify:
         local = code.cpu().numpy().astype(float)
-        local /= np.linalg.norm(local, axis=1, keepdims=True)
+        local /= np.maximum(np.linalg.norm(local, axis=1, keepdims=True), 1e-12)
         # Independent augmented least squares verifies both normal-equation branches.
         design = np.concatenate([local, np.eye(dimension)], axis=0)
         response = np.concatenate([np.ones(count), np.zeros(dimension)])
@@ -61,11 +66,22 @@ def pool(model, mean, scale, raw, device, verify=False):
                                           reversed_unit.sum(0))
         np.testing.assert_allclose(F.normalize(reversed_gmp, dim=0).cpu().numpy(), result['gmp'], atol=2e-8, rtol=2e-6)
         stats['independent_max_error'] = float(np.abs(expected - result['gmp']).max())
+        if model_precision:
+            original_pooling = model.pooling
+            for mode in ('unit_mean', 'gmp'):
+                model.pooling = mode
+                direct = model(torch.from_numpy(values).to(device).unsqueeze(0))[0][0]
+                np.testing.assert_allclose(result[mode], direct.cpu().numpy(), atol=2e-7, rtol=2e-6)
+            model.pooling = original_pooling
+            stats['model_forward_verified'] = True
     return result, stats
 
 
 def score(run, smoke, resume):
     config = read_json(run / 'config.json')
+    modes = config.get('pooling_modes', ['mean', 'unit_mean', 'gmp'])
+    assert modes and len(set(modes)) == len(modes) and set(modes) <= {'mean', 'unit_mean', 'gmp'}
+    model_precision = config.get('model_precision', False)
     torch.set_num_threads(1)
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
@@ -102,7 +118,8 @@ def score(run, smoke, resume):
                 raw = data['tokens'].copy()
             representations = {}
             for key, (model, mean, scale) in models.items():
-                representations[key], stats = pool(model, mean, scale, raw, device, verify=smoke)
+                representations[key], stats = pool(model, mean, scale, raw, device, verify=smoke,
+                                                    model_precision=model_precision)
                 source_stats.append(dict(source=identifier, model=key, **stats))
             sources[identifier] = dict(position=position, vectors=representations)
         identity = dict(files=identities, smoke=smoke, video=video,
@@ -127,9 +144,10 @@ def score(run, smoke, resume):
             target.mkdir(parents=True, exist_ok=True)
             for key in models:
                 method, seed = key.rsplit('_seed', 1)
-                original[identifier, key] = np.load(Path(config['reference_scores']) / video / 'sources' / identifier /
-                                                    f'{method}_pooled_cosine_seed{seed}.npy', mmap_mode='r')
-                for mode in ('mean', 'unit_mean', 'gmp'):
+                if 'reference_scores' in config:
+                    original[identifier, key] = np.load(Path(config['reference_scores']) / video / 'sources' / identifier /
+                                                        f'{method}_pooled_cosine_seed{seed}.npy', mmap_mode='r')
+                for mode in modes:
                     path = target / f'{method}_{mode}_seed{seed}.npy'
                     value = np.lib.format.open_memmap(path, mode='r+' if path.exists() else 'w+', dtype=np.float64, shape=available.shape)
                     if previous['shards'] == 0:
@@ -148,12 +166,14 @@ def score(run, smoke, resume):
                 raw = raw_values[offsets[number]:offsets[number + 1]]
                 for key, (model, mean, scale) in models.items():
                     need_check = smoke and not any(c['model'] == key for c in checks)
-                    vectors, stats = pool(model, mean, scale, raw, device, verify=need_check)
+                    vectors, stats = pool(model, mean, scale, raw, device, verify=need_check,
+                                          model_precision=model_precision)
                     statistics.append(dict(position=int(position), model=key, **stats))
                     for identifier, source in sources.items():
-                        for mode, vector in vectors.items():
-                            arrays[identifier, key, mode][position] = np.clip(vector @ source['vectors'][key][mode], -1., 1.)
-                        np.testing.assert_allclose(arrays[identifier, key, 'mean'][position], original[identifier, key][position], atol=2e-6, rtol=0)
+                        for mode in modes:
+                            arrays[identifier, key, mode][position] = np.clip(vectors[mode] @ source['vectors'][key][mode], -1., 1.)
+                        if 'reference_scores' in config:
+                            np.testing.assert_allclose(arrays[identifier, key, 'mean'][position], original[identifier, key][position], atol=2e-6, rtol=0)
                     if need_check:
                         checks.append(dict(model=key, position=int(position), **stats))
                 processed += 1
