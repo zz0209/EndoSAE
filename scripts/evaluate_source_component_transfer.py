@@ -103,10 +103,11 @@ def encode(raw, model, mean, scale, features, device):
     return vectors
 
 
-def score(run, smoke, resume):
+def score(run, smoke, resume, selection_name='selection.json'):
     config, capacity, event, _, original = inputs(run)
-    selection = read_json(run / 'selection.json')
-    assert selection['status'] == 'COMPLETE' and not selection['target_outcomes_used_for_selection']
+    selection = read_json(run / selection_name)
+    assert selection['status'] == 'COMPLETE'
+    assert not selection.get('future_outcomes_used_for_selection', selection['target_outcomes_used_for_selection'])
     torch.set_num_threads(1)
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
@@ -123,11 +124,12 @@ def score(run, smoke, resume):
         folder = root / video
         folder.mkdir(exist_ok=True)
         _, _, _, tracks, available, _, by_output, _ = video_inputs(original, video)
+        detection_frames = np.repeat(tracks['frame_indices'], np.diff(tracks['offsets']))
         raw_root = Path(original['raw_root']) / video
         receipt = read_json(raw_root / 'complete.json')
         encoded = np.load(raw_root / 'encoded.npy')
         np.testing.assert_array_equal(encoded, available)
-        identity = dict(selection=digest(run / 'selection.json'), source=digest(__file__), smoke=smoke,
+        identity = dict(selection=digest(run / selection_name), source=digest(__file__), smoke=smoke,
                         raw=digest(raw_root / 'complete.json'), models={key: digest(path / 'model.npz') for key, path in model_specs(original)})
         if (folder / 'identity.json').exists():
             assert resume and read_json(folder / 'identity.json') == identity
@@ -187,6 +189,8 @@ def score(run, smoke, resume):
                         error = max(error, abs(before - unchanged))
                         assert abs(before - unchanged) <= 2e-6 and (before < threshold) == (unchanged < threshold)
                         score_value = before if feature < 0 or (vectors[-1][feature] == 0 and source[-1][feature] == 0) else float(np.clip(vectors[feature] @ source[feature], -1., 1.))
+                        if 'activation_frame' in row and detection_frames[position] <= row['activation_frame']:
+                            score_value = before
                         arrays[identifier, key, row['policy']][position] = score_value
                 processed += 1
             for array in arrays.values():
@@ -202,8 +206,9 @@ def score(run, smoke, resume):
         atomic_write_json(folder / 'complete.json', dict(status='COMPLETE', **read_json(progress_path),
                           original_decisions_exact=True, peak_cuda_bytes=torch.cuda.max_memory_allocated(), identity=identity))
         completed += processed
-    atomic_write_json(root / 'summary.json', dict(status='COMPLETE', detections=completed, models=list(models),
-        seconds=time.perf_counter() - begin, torch=str(torch.__version__), numpy=np.__version__))
+    if not (root / 'summary.json').exists():
+        atomic_write_json(root / 'summary.json', dict(status='COMPLETE', detections=completed, models=list(models),
+            seconds=time.perf_counter() - begin, torch=str(torch.__version__), numpy=np.__version__))
 
 
 def evaluate(run, smoke, resume):
