@@ -41,6 +41,9 @@ class TokenIdentitySAE(nn.Module):
         if method not in METHODS:
             raise ValueError(method)
         self.method = method
+        self.pooling = config.get("pooling", "mean")
+        if self.pooling not in ("mean", "unit_mean", "gmp"):
+            raise ValueError(self.pooling)
         self.identity_space = config.get("identity_space", "projected")
         if self.identity_space not in ("projected", "code"):
             raise ValueError(self.identity_space)
@@ -78,10 +81,28 @@ class TokenIdentitySAE(nn.Module):
             code = torch.zeros_like(code).scatter(-1, indices, selected)
         return code
 
+    def pool(self, local):
+        if self.pooling == "mean":
+            return local.mean(dim=-2)
+        unit = F.normalize(local.double(), dim=-1)
+        if self.pooling == "unit_mean":
+            return unit.mean(dim=-2).to(local.dtype)
+        count, dimension = unit.shape[-2:]
+        if count <= dimension:
+            gram = unit @ unit.transpose(-1, -2)
+            weights = torch.linalg.solve(gram + torch.eye(count, device=unit.device),
+                                        torch.ones_like(unit[..., :1]))
+            pooled = (unit.transpose(-1, -2) @ weights).squeeze(-1)
+        else:
+            gram = unit.transpose(-1, -2) @ unit
+            pooled = torch.linalg.solve(gram + torch.eye(dimension, device=unit.device),
+                                        unit.sum(dim=-2, keepdim=True).transpose(-1, -2)).squeeze(-1)
+        return pooled.to(local.dtype)
+
     def forward(self, tokens):
         mean = tokens.mean(dim=-2)
         if self.method == "raw_supcon":
             return F.normalize(self.projection(mean), dim=-1), None, None
         local = self.encode(tokens)
-        pooled = local.mean(dim=-2) if self.method.startswith("token_") else self.encode(mean)
+        pooled = self.pool(local) if self.method.startswith("token_") else self.encode(mean)
         return F.normalize(self.readout(pooled), dim=-1), self.decoder(local), local

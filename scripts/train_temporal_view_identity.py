@@ -109,7 +109,7 @@ def job_inputs(raw, offsets, records, fitting, condition):
 
 def train(run, smoke, resume, output, stop_after, input_loader=load_inputs, source_reader=source_identity):
     config, cohort, raw, offsets, records, receipts = input_loader(run)
-    if config['methods'] != ['token_sparse', 'token_dense', 'raw_supcon']:
+    if not config['methods'] or len(set(config['methods'])) != len(config['methods']) or not set(config['methods']) <= {'token_sparse', 'token_dense', 'raw_supcon'}:
         raise ValueError('Unexpected method roster')
     torch.set_num_threads(config['threads'])
     torch.use_deterministic_algorithms(True)

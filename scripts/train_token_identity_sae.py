@@ -183,7 +183,7 @@ def evaluate(model, values, offsets, records, videos, folder, stem, config):
         if local is not None:
             token_code = local.mean(dim=1)
             mean_code = model.encode(tokens.mean(dim=1))
-            pooled = token_code if model.method.startswith("token_") else mean_code
+            pooled = model.pool(local) if model.method.startswith("token_") else mean_code
             gap = (token_code - mean_code).norm() / token_code.norm().clamp_min(1e-12)
             row.update(reconstruction_nmse=float((decoded - tokens).square().mean() / tokens.square().mean()),
                 local_active=float((local > 0).sum(-1).float().mean()),
@@ -267,10 +267,24 @@ def fit(config, method, seed, raw, offsets, records, fit_videos, held_videos, fo
     for step in range(initial, steps + 1):
         model.train()
         chosen = np.array(sample_batch(train_records, rng, config))
-        token_indices = np.stack([token_rng.integers(offsets[i], offsets[i + 1], size=config["tokens_per_clip"]) for i in chosen])
+        if config.get("all_roi_tokens", False):
+            if config.get("identity_interaction", "pooled_cosine") != "pooled_cosine":
+                raise ValueError("All-token fitting requires pooled cosine")
+            token_indices = np.concatenate([np.arange(offsets[i], offsets[i + 1]) for i in chosen])
+            projected_rows, reconstruction_losses = [], []
+            for index in chosen:
+                samples = values[offsets[index]:offsets[index + 1]][None]
+                projected, reconstruction, local = model(samples)
+                projected_rows.append(projected)
+                reconstruction_losses.append((reconstruction - samples).square().mean())
+            projected = torch.cat(projected_rows)
+            reconstruction_loss = torch.stack(reconstruction_losses).mean()
+        else:
+            token_indices = np.stack([token_rng.integers(offsets[i], offsets[i + 1], size=config["tokens_per_clip"]) for i in chosen])
+            samples = values[torch.from_numpy(token_indices).to(config["device"])]
+            projected, reconstruction, local = model(samples)
+            reconstruction_loss = (reconstruction - samples).square().mean() if reconstruction is not None else projected.new_zeros(())
         sequence.append(dict(indices=chosen.tolist(), tokens_sha256=hashlib.sha256(token_indices.tobytes()).hexdigest()))
-        samples = values[torch.from_numpy(token_indices).to(config["device"])]
-        projected, reconstruction, local = model(samples)
         if config.get("identity_interaction", "pooled_cosine") == "symmetric_maxsim":
             identity_loss = local_identity_loss(model, local, labels[chosen], config["temperature"])
         else:
@@ -280,7 +294,6 @@ def fit(config, method, seed, raw, offsets, records, fit_videos, held_videos, fo
         if negative_scope == "global_and_procedure":
             procedure_loss = procedure_identity_loss(projected, labels[chosen], procedures[chosen], config["temperature"])
             identity_loss = .5 * (identity_loss + procedure_loss)
-        reconstruction_loss = (reconstruction - samples).square().mean() if reconstruction is not None else identity_loss.new_zeros(())
         loss = identity_loss + config["reconstruction_weight"] * reconstruction_loss
         if not torch.isfinite(loss):
             raise ValueError("Nonfinite objective")
