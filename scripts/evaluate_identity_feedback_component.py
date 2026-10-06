@@ -230,8 +230,8 @@ def score(run, smoke, resume):
                         assert abs(before - original_score) <= 2e-6 and (before < row['threshold']) == (original_score < row['threshold'])
                         result = apply_feedback(before, vectors[-1], vectors[feature], source,
                             sources[key][identifier + '__negative'], sources[key][identifier + '__edited_source'], row, future[identifier][position])
-                        for policy, value in result.items():
-                            arrays[identifier, key, policy][position] = value
+                        for policy in config['policies']:
+                            arrays[identifier, key, policy][position] = result[policy]
                 processed += 1
             for array in arrays.values():
                 array.flush()
