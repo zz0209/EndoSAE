@@ -94,6 +94,14 @@ def encode(raw, model, mean, scale, features, device):
     pooled = codes.mean(1)[0]
     vectors = {-1: projected[0].cpu().numpy().astype(float)}
     for feature in features:
+        if isinstance(feature, tuple):
+            changed = vectors[-1].copy()
+            if feature:
+                changed[list(feature)] = 0
+                assert np.isfinite(changed).all() and np.linalg.norm(changed) > 0
+                changed /= np.linalg.norm(changed)
+            vectors[feature] = changed
+            continue
         if feature < 0:
             continue
         changed = pooled.clone()
@@ -101,6 +109,10 @@ def encode(raw, model, mean, scale, features, device):
         assert torch.isfinite(changed).all() and changed.norm() > 0
         vectors[feature] = F.normalize(changed, dim=0).cpu().numpy().astype(float)
     return vectors
+
+
+def action_key(row):
+    return tuple(row['coordinates']) if 'coordinates' in row else row['feature']
 
 
 def score(run, smoke, resume, selection_name='selection.json'):
@@ -140,7 +152,7 @@ def score(run, smoke, resume, selection_name='selection.json'):
             completed += int(encoded.sum())
             continue
         routes = [row for row in selection['choices'] if row['video'] == video and row['model'] in models]
-        features = {key: sorted({row['feature'] for row in routes if row['model'] == key}) for key in models}
+        features = {key: sorted({action_key(row) for row in routes if row['model'] == key}, key=repr) for key in models}
         sources, originals, arrays = {}, {}, {}
         progress_path = folder / 'progress.json'
         previous = read_json(progress_path) if progress_path.exists() else dict(shards=0, processed=0, seconds=0., max_score_error=0.)
@@ -182,13 +194,15 @@ def score(run, smoke, resume, selection_name='selection.json'):
                     method, seed = key.rsplit('_seed', 1)
                     threshold = points[int(seed)][method + '_pooled_cosine']['threshold']
                     for row in (r for r in routes if r['model'] == key):
-                        identifier, feature = row['episode'], row['feature']
+                        identifier, feature = row['episode'], action_key(row)
                         source = sources[identifier, key]
                         before = float(originals[identifier, key][position])
                         unchanged = float(np.clip(vectors[-1] @ source[-1], -1., 1.))
                         error = max(error, abs(before - unchanged))
                         assert abs(before - unchanged) <= 2e-6 and (before < threshold) == (unchanged < threshold)
-                        score_value = before if feature < 0 or (vectors[-1][feature] == 0 and source[-1][feature] == 0) else float(np.clip(vectors[feature] @ source[feature], -1., 1.))
+                        coordinates = list(feature) if isinstance(feature, tuple) else ([] if feature < 0 else [feature])
+                        unaffected = not coordinates or (np.all(vectors[-1][coordinates] == 0) and np.all(source[-1][coordinates] == 0))
+                        score_value = before if unaffected else float(np.clip(vectors[feature] @ source[feature], -1., 1.))
                         if 'activation_frame' in row and detection_frames[position] <= row['activation_frame']:
                             score_value = before
                         arrays[identifier, key, row['policy']][position] = score_value

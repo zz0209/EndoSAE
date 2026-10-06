@@ -212,14 +212,16 @@ def summarize(run, smoke):
             rows.append(dict(zip(['method', 'seed', 'video', 'policy', 'after_activation'], keys), population=name,
                 **{k: int(v[0]) for k, v in measures.items()}, events=len(group), original_wrong=int((~group.same_identity & ~group.before_retained).sum())))
     pd.DataFrame(rows).to_csv(output / 'event_effects.csv', index=False)
-    policies = read_json(run / 'config.json')['policies']
+    settings = read_json(run / 'config.json')
+    policies = settings['policies']
+    labels = settings.get('policy_labels', ['Original', 'Negative', 'Window score', 'History score', 'History decision'])
     fig, axes = transfer.plt.subplots(2, 2, figsize=(13, 9), layout='constrained')
     for row, population in enumerate(['complete', 'reference_available']):
         for ax, metric in zip(axes[row], ['repeat_removal', 'other_retention']):
             for method, group in summary[(summary.population == population) & (summary.horizon == 'after_activation')].groupby('method'):
                 group = group.set_index('policy').loc[policies]
                 ax.plot(range(len(policies)), group[metric] * 100, marker='o', label='SAE' if method.endswith('sparse') else 'Dense')
-            ax.set_xticks(range(len(policies)), ['Original', 'Negative', 'Window score', 'History score', 'History decision'], rotation=20)
+            ax.set_xticks(range(len(policies)), labels, rotation=20)
             ax.set_title(population.replace('_', ' ').title())
             ax.set_ylabel(metric.replace('_', ' ').title() + ' (%)')
             ax.grid(alpha=.2)
