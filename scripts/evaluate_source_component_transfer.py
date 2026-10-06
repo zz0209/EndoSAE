@@ -86,13 +86,26 @@ def select(run, resume):
         created_at=datetime.now(timezone.utc).isoformat(), target_outcomes_used_for_selection=False))
 
 
+def budget_codes(values, model, top_k):
+    assert model.identity_space == 'code' and model.pooling == 'mean'
+    assert 1 <= top_k <= model.latent_dim
+    codes = F.relu(model.encoder(values))
+    if top_k < model.latent_dim:
+        selected, indices = torch.topk(codes, top_k, dim=-1, sorted=False)
+        codes = torch.zeros_like(codes).scatter(-1, indices, selected)
+    return codes
+
+
 @torch.no_grad()
-def encode(raw, model, mean, scale, features, device):
+def encode(raw, model, mean, scale, features, device, top_k=None):
     values = ((raw.astype(float) - mean) / scale).astype(np.float32)
     projected, _, codes = model(torch.from_numpy(values[None]).to(device))
     assert model.identity_space == 'code'
     pooled = codes.mean(1)[0]
     vectors = {-1: projected[0].cpu().numpy().astype(float)}
+    if top_k is not None:
+        alternative = budget_codes(torch.from_numpy(values[None]).to(device), model, top_k)
+        vectors['_budget'] = F.normalize(alternative.mean(1)[0], dim=0).cpu().numpy().astype(float)
     for feature in features:
         if isinstance(feature, tuple):
             changed = vectors[-1].copy()
@@ -174,7 +187,8 @@ def score(run, smoke, resume, selection_name='selection.json'):
             with np.load(source / 'observed_tokens.npz') as saved:
                 raw = saved['tokens'].copy()
             for key, (model, mean, scale) in models.items():
-                sources[identifier, key] = encode(raw, model, mean, scale, features[key], device)
+                budget = config.get('inference_top_k', {}).get(model.method)
+                sources[identifier, key] = encode(raw, model, mean, scale, features[key], device, budget)
                 method, seed = key.rsplit('_seed', 1)
                 originals[identifier, key] = np.load(Path(original['embedding_root']) / video / 'sources' / identifier / f'{method}_pooled_cosine_seed{seed}.npy', mmap_mode='r')
                 with np.load(capacity / 'evaluation' / video / key / 'effects.npz') as saved:
@@ -199,7 +213,8 @@ def score(run, smoke, resume, selection_name='selection.json'):
             assert np.all(encoded[positions])
             for i, position in enumerate(positions):
                 for key, (model, mean, scale) in models.items():
-                    vectors = encode(values[offsets[i]:offsets[i + 1]], model, mean, scale, features[key], device)
+                    budget = config.get('inference_top_k', {}).get(model.method)
+                    vectors = encode(values[offsets[i]:offsets[i + 1]], model, mean, scale, features[key], device, budget)
                     method, seed = key.rsplit('_seed', 1)
                     threshold = points[int(seed)][method + '_pooled_cosine']['threshold']
                     for row in (r for r in routes if r['model'] == key):
@@ -213,7 +228,8 @@ def score(run, smoke, resume, selection_name='selection.json'):
                         unaffected = not coordinates or (np.all(vectors[-1][coordinates] == 0) and np.all(source[-1][coordinates] == 0))
                         score_value = before if unaffected else float(np.clip(vectors[feature] @ source[feature], -1., 1.))
                         if 'direction_file' in row:
-                            score_value = float(np.clip(vectors[-1] @ directions[key, identifier, row['policy']], -1., 1.))
+                            vector_key = '_budget' if row.get('use_budget', False) else -1
+                            score_value = float(np.clip(vectors[vector_key] @ directions[key, identifier, row['policy']], -1., 1.))
                         if 'activation_frame' in row and detection_frames[position] <= row['activation_frame']:
                             score_value = before
                         arrays[identifier, key, row['policy']][position] = score_value

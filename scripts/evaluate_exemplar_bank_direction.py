@@ -43,6 +43,8 @@ def fit(run, smoke, resume):
         bank_path = prior / 'bank' / (key + '.npz')
         history_path = history / 'selection' / video / key / 'vectors.npz'
         codes_path = capacity / 'evaluation' / video / key / 'effects.npz'
+        if 'fitting_vectors_root' in config:
+            codes_path = Path(config['fitting_vectors_root']) / video / (key + '.npz')
         identity = {str(p): digest(p) for p in [run / 'config.json', run / 'protocol.json', Path(__file__),
                     bank_path, history_path, codes_path, event / 'inputs' / video / 'events.json']}
         if (target / 'complete.json').exists():
@@ -81,6 +83,7 @@ def fit(run, smoke, resume):
             path = target / (policy + '.npy')
             np.save(path, direction)
             local.append(dict(choice, policy=policy, feature=-1,
+                              use_budget='inference_top_k' in config,
                               direction_file=str(path.relative_to(run)), direction_sha256=digest(path)))
         np.savez_compressed(target / 'fit.npz', positives=positives, positive_positions=positions,
                             coefficient=w, intercept=bias, sample_weight=sample_weight,
@@ -93,7 +96,13 @@ def fit(run, smoke, resume):
         atomic_write_json(root / 'progress.json', dict(completed=completed, total=len(choices)))
         print('EXEMPLAR_FIT', completed, '/', len(choices), video, key, identifier, 'positives', len(positives), flush=True)
         pause_after_checkpoint(root / 'progress.json')
-    atomic_write_json(run / selection_name(smoke), dict(status='COMPLETE', choices=rows,
+    target = run / selection_name(smoke)
+    if target.exists():
+        saved = read_json(target)
+        assert resume and saved['status'] == 'COMPLETE' and saved['choices'] == rows
+        assert saved['source_sha256'] == digest(__file__)
+        return
+    atomic_write_json(target, dict(status='COMPLETE', choices=rows,
         target_outcomes_used_for_selection=True, future_outcomes_used_for_selection=False,
         python=platform.python_version(), sklearn=sklearn.__version__, numpy=np.__version__,
         seconds=time.perf_counter() - begin, source_sha256=digest(__file__)))
