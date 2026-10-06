@@ -302,6 +302,25 @@ def fit(config, method, seed, raw, offsets, records, fit_videos, held_videos, fo
             procedure_loss = procedure_identity_loss(projected, labels[chosen], procedures[chosen], config["temperature"])
             identity_loss = .5 * (identity_loss + procedure_loss)
         loss = identity_loss + config["reconstruction_weight"] * reconstruction_loss
+        gradient_diagnostics = {}
+        if config.get('reconstruction_gradient_interval'):
+            assert not config.get('all_roi_tokens', False) and method != 'raw_supcon'
+            assert 'training_budgets' not in config
+            if step == 1 or step % config['reconstruction_gradient_interval'] == 0:
+                parameters = tuple(model.encoder.parameters())
+                task_gradient = torch.cat([g.flatten() for g in torch.autograd.grad(
+                    identity_loss, parameters, retain_graph=True)])
+                reconstruction_gradient = torch.cat([g.flatten() for g in torch.autograd.grad(
+                    config['reconstruction_weight'] * reconstruction_loss, parameters, retain_graph=True)])
+                task_norm, reconstruction_norm = task_gradient.norm(), reconstruction_gradient.norm()
+                assert task_norm > 0 and reconstruction_norm > 0
+                gradient_diagnostics = dict(encoder_gradient_cosine=float(
+                    torch.dot(task_gradient, reconstruction_gradient) / (task_norm * reconstruction_norm)),
+                    encoder_task_gradient_norm=float(task_norm),
+                    encoder_reconstruction_gradient_norm=float(reconstruction_norm))
+            if not config['reconstruction_encoder_gradient']:
+                decoder_loss = (model.decoder(local.detach()) - samples).square().mean()
+                loss = identity_loss + config['reconstruction_weight'] * decoder_loss
         if 'training_budgets' in config:
             assert not config.get('all_roi_tokens', False) and negative_scope == 'global'
             assert model.identity_space == 'code' and model.pooling == 'mean'
@@ -321,6 +340,7 @@ def fit(config, method, seed, raw, offsets, records, fit_videos, held_videos, fo
         model.normalize_decoder()
         history.append(dict(step=step, loss=float(loss.detach()), identity=float(identity_loss.detach()),
                             reconstruction=float(reconstruction_loss.detach()), gradient_norm=float(norm)))
+        history[-1].update(gradient_diagnostics)
         if 'training_budgets' in config:
             history[-1].update(full_identity=float(full_identity.detach()), full_reconstruction=float(full_reconstruction.detach()))
         if procedure_loss is not None:
