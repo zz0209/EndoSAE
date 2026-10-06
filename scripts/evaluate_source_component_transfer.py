@@ -32,6 +32,9 @@ def inputs(run):
     event_config = read_json(event / 'config.json')
     original = read_json(Path(event_config['application_run']) / 'config.json')
     original.update(training_runs=event_config['training_runs'], methods=event_config['methods'], seeds=event_config['seeds'])
+    for field in ['methods', 'seeds', 'development_videos']:
+        if field in config:
+            original[field] = config[field]
     return config, capacity, event, event_config, original
 
 
@@ -97,14 +100,18 @@ def budget_codes(values, model, top_k):
 
 
 @torch.no_grad()
-def encode(raw, model, mean, scale, features, device, top_k=None):
+def encode(raw, model, mean, scale, features, device, top_k=None, alternative_model=None):
     values = ((raw.astype(float) - mean) / scale).astype(np.float32)
     projected, _, codes = model(torch.from_numpy(values[None]).to(device))
     assert model.identity_space == 'code'
     pooled = codes.mean(1)[0]
     vectors = {-1: projected[0].cpu().numpy().astype(float)}
     if top_k is not None:
-        alternative = budget_codes(torch.from_numpy(values[None]).to(device), model, top_k)
+        alternate, alternate_values = model, values
+        if alternative_model is not None:
+            alternate, other_mean, other_scale = alternative_model
+            alternate_values = ((raw.astype(float) - other_mean) / other_scale).astype(np.float32)
+        alternative = budget_codes(torch.from_numpy(alternate_values[None]).to(device), alternate, top_k)
         vectors['_budget'] = F.normalize(alternative.mean(1)[0], dim=0).cpu().numpy().astype(float)
     for feature in features:
         if isinstance(feature, tuple):
@@ -140,6 +147,7 @@ def score(run, smoke, resume, selection_name='selection.json'):
     if smoke:
         original['seeds'] = [config['smoke_seed']]
     models = load_models(original, device)
+    alternatives = load_models(dict(original, training_runs=config['alternative_training_runs']), device) if 'alternative_training_runs' in config else {}
     videos = [config['smoke_video']] if smoke else original['development_videos']
     root = run / ('smoke_scores' if smoke else 'scores')
     root.mkdir(exist_ok=True)
@@ -156,6 +164,8 @@ def score(run, smoke, resume, selection_name='selection.json'):
         np.testing.assert_array_equal(encoded, available)
         identity = dict(selection=digest(run / selection_name), source=digest(__file__), smoke=smoke,
                         raw=digest(raw_root / 'complete.json'), models={key: digest(path / 'model.npz') for key, path in model_specs(original)})
+        if alternatives:
+            identity['alternatives'] = {key: digest(path / 'model.npz') for key, path in model_specs(dict(original, training_runs=config['alternative_training_runs']))}
         if (folder / 'identity.json').exists():
             assert resume and read_json(folder / 'identity.json') == identity
         else:
@@ -188,7 +198,7 @@ def score(run, smoke, resume, selection_name='selection.json'):
                 raw = saved['tokens'].copy()
             for key, (model, mean, scale) in models.items():
                 budget = config.get('inference_top_k', {}).get(model.method)
-                sources[identifier, key] = encode(raw, model, mean, scale, features[key], device, budget)
+                sources[identifier, key] = encode(raw, model, mean, scale, features[key], device, budget, alternatives.get(key))
                 method, seed = key.rsplit('_seed', 1)
                 originals[identifier, key] = np.load(Path(original['embedding_root']) / video / 'sources' / identifier / f'{method}_pooled_cosine_seed{seed}.npy', mmap_mode='r')
                 with np.load(capacity / 'evaluation' / video / key / 'effects.npz') as saved:
@@ -214,7 +224,7 @@ def score(run, smoke, resume, selection_name='selection.json'):
             for i, position in enumerate(positions):
                 for key, (model, mean, scale) in models.items():
                     budget = config.get('inference_top_k', {}).get(model.method)
-                    vectors = encode(values[offsets[i]:offsets[i + 1]], model, mean, scale, features[key], device, budget)
+                    vectors = encode(values[offsets[i]:offsets[i + 1]], model, mean, scale, features[key], device, budget, alternatives.get(key))
                     method, seed = key.rsplit('_seed', 1)
                     threshold = points[int(seed)][method + '_pooled_cosine']['threshold']
                     for row in (r for r in routes if r['model'] == key):

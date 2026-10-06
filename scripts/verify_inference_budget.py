@@ -100,12 +100,12 @@ def verify(run, smoke):
                 values = local[metric + '_delta'] * 100
                 ax.scatter(np.full(len(values), index), values, s=30)
                 ax.scatter(index, values.mean(), marker='_', s=200, color='black')
-                labels.append(('SAE full' if method.endswith('sparse') else 'Dense K64') + '\n' + policy.replace('_', ' '))
+                labels.append(config.get('figure_label', 'SAE full' if method.endswith('sparse') else 'Dense K64') + '\n' + policy.replace('_', ' '))
             ax.axhline(0, color='gray', lw=1)
             ax.set_xticks(range(len(labels)), labels, fontsize=8)
             ax.set_ylabel('Repeat-removal change (percentage points)')
             ax.set_title(title)
-        fig.suptitle('Frozen encoders: inference cutoff intervention | three seeds')
+        fig.suptitle(config.get('figure_title', 'Frozen encoders: inference cutoff intervention | three seeds'))
         fig.savefig(run / 'analysis/budget_effect.png', dpi=170)
         transfer.plt.close(fig)
     atomic_write_json(run / (prefix + 'verification.json'), dict(status='PASS', models=len(gaps),

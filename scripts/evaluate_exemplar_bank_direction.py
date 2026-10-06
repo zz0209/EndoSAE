@@ -31,6 +31,8 @@ def fit(run, smoke, resume):
     assert bank_receipt['status'] == 'COMPLETE' and bank_receipt['observations'] == 340
     history = Path(config['history_run'])
     choices = [r for r in read_json(history / 'selection.json')['choices'] if r['policy'] == 'unchanged']
+    model_keys = {key for key, _ in transfer.model_specs(original)}
+    choices = [r for r in choices if r['model'] in model_keys and r['video'] in original['development_videos']]
     if smoke:
         choices = [r for r in choices if r['video'] == config['smoke_video'] and r['model'].endswith(str(config['smoke_seed']))]
     root = run / ('smoke_fit' if smoke else 'fit')

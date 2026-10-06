@@ -227,7 +227,11 @@ def fit(config, method, seed, raw, offsets, records, fit_videos, held_videos, fo
         if not resume or result["identity_sha256"] != signature:
             raise ValueError("Completed fit identity differs")
         return result
-    mean, scale = normalize(raw, offsets, records, fit_videos)
+    if 'initial_model_folder' in config:
+        with np.load(Path(config['initial_model_folder']) / 'normalization.npz') as saved:
+            mean, scale = saved['mean'], saved['scale']
+    else:
+        mean, scale = normalize(raw, offsets, records, fit_videos)
     shared.save_npz(folder / "normalization.npz", mean=mean, scale=scale)
     values = torch.from_numpy(((raw - mean) / scale).astype(np.float32)).to(config["device"])
     train_records = [dict(row, split="train" if row["video_id"] in fit_videos else "excluded") for row in records]
@@ -242,6 +246,9 @@ def fit(config, method, seed, raw, offsets, records, fit_videos, held_videos, fo
     procedures = torch.tensor([procedure_map[r["video_id"]] for r in records], device=config["device"])
     torch.manual_seed(seed)
     model = TokenIdentitySAE(config, method).to(config["device"])
+    if 'initial_model_folder' in config:
+        with np.load(Path(config['initial_model_folder']) / 'model.npz') as saved:
+            model.load_state_dict({key: torch.from_numpy(saved[key]).to(config['device']) for key in saved.files})
     optimizer = torch.optim.AdamW(model.parameters(), lr=config["learning_rate"], weight_decay=config["weight_decay"])
     rng = np.random.default_rng(seed)
     token_rng = np.random.default_rng(np.random.SeedSequence([seed, 71005]))
@@ -295,6 +302,14 @@ def fit(config, method, seed, raw, offsets, records, fit_videos, held_videos, fo
             procedure_loss = procedure_identity_loss(projected, labels[chosen], procedures[chosen], config["temperature"])
             identity_loss = .5 * (identity_loss + procedure_loss)
         loss = identity_loss + config["reconstruction_weight"] * reconstruction_loss
+        if 'training_budgets' in config:
+            assert not config.get('all_roi_tokens', False) and negative_scope == 'global'
+            assert model.identity_space == 'code' and model.pooling == 'mean'
+            assert config['training_budgets'] == [model.top_k, model.latent_dim]
+            full = F.relu(model.encoder(samples))
+            full_identity = supcon(F.normalize(full.mean(1), dim=-1), labels[chosen], config['temperature'])
+            full_reconstruction = (model.decoder(full) - samples).square().mean()
+            loss = .5 * (loss + full_identity + config['reconstruction_weight'] * full_reconstruction)
         if not torch.isfinite(loss):
             raise ValueError("Nonfinite objective")
         optimizer.zero_grad(set_to_none=True)
@@ -306,6 +321,8 @@ def fit(config, method, seed, raw, offsets, records, fit_videos, held_videos, fo
         model.normalize_decoder()
         history.append(dict(step=step, loss=float(loss.detach()), identity=float(identity_loss.detach()),
                             reconstruction=float(reconstruction_loss.detach()), gradient_norm=float(norm)))
+        if 'training_budgets' in config:
+            history[-1].update(full_identity=float(full_identity.detach()), full_reconstruction=float(full_reconstruction.detach()))
         if procedure_loss is not None:
             same_procedure = procedures[chosen, None] == procedures[None, chosen]
             different_identity = labels[chosen, None] != labels[None, chosen]

@@ -20,22 +20,26 @@ from src.evaluation.realcolon_task import digest
 
 
 @torch.no_grad()
-def observations(raw, offsets, indices, model, mean, scale, top_k, bank):
+def observations(raw, offsets, indices, model, mean, scale, top_k, bank, alternative_model=None):
     original, alternative, diagnostics = [], [], []
     for index in indices:
         normalized = ((raw[offsets[index]:offsets[index + 1]].astype(float) - mean) / scale).astype(np.float32)
         values = torch.from_numpy(normalized[None]).cuda()
         native_vector, _, native_codes = model(values)
-        changed = transfer.budget_codes(values, model, top_k)
+        alternate, alternate_values = model, values
+        if alternative_model is not None:
+            alternate, other_mean, other_scale = alternative_model
+            alternate_values = torch.from_numpy(((raw[offsets[index]:offsets[index + 1]].astype(float) - other_mean) / other_scale).astype(np.float32)[None]).cuda()
+        changed = transfer.budget_codes(alternate_values, alternate, top_k)
         vector = F.normalize(changed.mean(1)[0], dim=0)
         assert torch.isfinite(vector).all() and vector.norm() > 0
-        full = F.relu(model.encoder(values))
-        assert torch.all(changed <= full) and torch.all(native_codes <= full)
+        full = F.relu(alternate.encoder(alternate_values))
+        assert torch.all(changed <= full)
         energy = values.square().sum().item()
         diagnostics.append(dict(tokens=len(normalized), native_l0=float((native_codes > 0).sum().item() / len(normalized)),
             changed_l0=float((changed > 0).sum().item() / len(normalized)),
             native_nmse=float((model.decoder(native_codes) - values).square().sum().item() / energy),
-            changed_nmse=float((model.decoder(changed) - values).square().sum().item() / energy)))
+            changed_nmse=float((alternate.decoder(changed) - alternate_values).square().sum().item() / alternate_values.square().sum().item())))
         if bank:
             native = native_codes.mean(1)[0].cpu().numpy().astype(float)
             changed_vector = changed.mean(1)[0].cpu().numpy().astype(float)
@@ -53,6 +57,7 @@ def prepare(run, resume):
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
     models = transfer.load_models(original, torch.device(config['device']))
+    alternatives = transfer.load_models(dict(original, training_runs=config['alternative_training_runs']), torch.device(config['device'])) if 'alternative_training_runs' in config else {}
     old_bank = Path(config['native_bank_run']) / 'bank'
     bank_receipt = read_json(old_bank / 'summary.json')
     records = bank_receipt['records']
@@ -66,6 +71,10 @@ def prepare(run, resume):
     for key, folder in transfer.model_specs(original):
         for name in ['model.npz', 'normalization.npz', 'model_config.json']:
             identity[str(folder / name)] = digest(folder / name)
+    if alternatives:
+        for key, folder in transfer.model_specs(dict(original, training_runs=config['alternative_training_runs'])):
+            for name in ['model.npz', 'normalization.npz', 'model_config.json']:
+                identity[str(folder / name)] = digest(folder / name)
     begin, completed, receipts = time.perf_counter(), 0, []
     training_videos = sorted({r['video_id'] for r in records})
     total = (len(training_videos) + len(original['development_videos'])) * len(models)
@@ -98,7 +107,7 @@ def prepare(run, resume):
                     assert digest(folder / 'vectors.npz') == receipt['vectors_sha256']
                 else:
                     native, changed, diagnostics = observations(raw, offsets, indices, model, mean, scale,
-                                                               config['inference_top_k'][model.method], stage == 'bank')
+                                                               config['inference_top_k'][model.method], stage == 'bank', alternatives.get(key))
                     reference = old_bank / (key + '.npz') if stage == 'bank' else capacity / 'evaluation' / video / key / 'effects.npz'
                     with np.load(reference) as saved:
                         if stage == 'bank':
