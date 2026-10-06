@@ -152,6 +152,15 @@ def score(run, smoke, resume, selection_name='selection.json'):
             completed += int(encoded.sum())
             continue
         routes = [row for row in selection['choices'] if row['video'] == video and row['model'] in models]
+        directions = {}
+        for row in routes:
+            if 'direction_file' in row:
+                path = run / row['direction_file']
+                assert digest(path) == row['direction_sha256']
+                direction = np.load(path, allow_pickle=False)
+                assert direction.ndim == 1 and np.isfinite(direction).all()
+                np.testing.assert_allclose(np.linalg.norm(direction), 1, atol=1e-10)
+                directions[row['model'], row['episode'], row['policy']] = direction
         features = {key: sorted({action_key(row) for row in routes if row['model'] == key}, key=repr) for key in models}
         sources, originals, arrays = {}, {}, {}
         progress_path = folder / 'progress.json'
@@ -203,6 +212,8 @@ def score(run, smoke, resume, selection_name='selection.json'):
                         coordinates = list(feature) if isinstance(feature, tuple) else ([] if feature < 0 else [feature])
                         unaffected = not coordinates or (np.all(vectors[-1][coordinates] == 0) and np.all(source[-1][coordinates] == 0))
                         score_value = before if unaffected else float(np.clip(vectors[feature] @ source[feature], -1., 1.))
+                        if 'direction_file' in row:
+                            score_value = float(np.clip(vectors[-1] @ directions[key, identifier, row['policy']], -1., 1.))
                         if 'activation_frame' in row and detection_frames[position] <= row['activation_frame']:
                             score_value = before
                         arrays[identifier, key, row['policy']][position] = score_value
