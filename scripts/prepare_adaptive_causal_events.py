@@ -40,14 +40,21 @@ def inputs(run, smoke):
             assert digest(source / name) == expected
         with np.load(source / 'tokens.npz', allow_pickle=False) as saved:
             positions = saved['positions'].copy()
-        definition, _, records, tracks, available, _, _, files = video_inputs(application, video)
+        definition, _, records, tracks, available, targets, _, files = video_inputs(application, video)
+        if config.get('requested_positions'):
+            selection = read_json(config['requested_positions'])['videos'][video]
+            positions = np.array(selection['smoke_positions'] if smoke else selection['positions'], dtype=int)
+            assert np.all(available[positions])
         outputs = np.unique(np.searchsorted(tracks['offsets'][1:], positions, side='right')).tolist()
         source_outputs = sorted({int(e['click']['output_index']) for e in manifest['episodes']})
-        assert set(source_outputs) <= set(outputs) and np.all(available[positions])
-        if smoke:
+        assert np.all(available[positions])
+        if not config.get('requested_positions'):
+            assert set(source_outputs) <= set(outputs)
+        if smoke and not config.get('requested_positions'):
             outputs = sorted({source_outputs[0], outputs[-1]})
         jobs.append(dict(video=video, source=source, manifest=manifest, definition=definition,
-            records=records, tracks=tracks, available=available, outputs=outputs,
+            records=records, tracks=tracks, available=available, outputs=outputs, requested=set(positions.tolist()),
+            targets=targets, raw_root=Path(application['raw_root']) / video if config.get('requested_positions') else None,
             input_hashes={str(path): digest(path) for path in files},
             event_receipt_sha256=digest(source / 'complete.json')))
     return config, jobs
@@ -62,7 +69,8 @@ def prepare(run, smoke, resume, preflight):
             events=sum(len(job['manifest']['events']) for job in jobs),
             source_count=sum(len(job['manifest']['episodes']) for job in jobs),
             estimated_prefix_bytes=total * 1569 * 768 * 4,
-            selection='All detector positions from the existing fixed event sample and acknowledgement sources.')
+            selection='Requested historical detector positions.' if config.get('requested_positions') else
+                'All detector positions from the existing fixed event sample and acknowledgement sources.')
         atomic_write_json(run / 'input_verification.json', result)
         print(result, flush=True)
         return
@@ -75,6 +83,9 @@ def prepare(run, smoke, resume, preflight):
         videos={job['video']: dict(inputs=job['input_hashes'], event_receipt=job['event_receipt_sha256'],
                                   outputs=job['outputs']) for job in jobs})
     signature = json_digest(identity)
+    if config.get('requested_positions'):
+        identity['requested_positions_sha256'] = digest(config['requested_positions'])
+        signature = json_digest(identity)
     if (root / 'identity.json').exists():
         assert resume and read_json(root / 'identity.json') == identity
     else:
@@ -110,15 +121,30 @@ def prepare(run, smoke, resume, preflight):
                 prefix = captured['value'][0].cpu().numpy().copy()
                 assert prefix.shape == (1569, 768) and np.isfinite(prefix).all()
                 tokens = tokens_to_frames(native[None])
+                historical_reference = {}
+                if smoke and job['raw_root']:
+                    old_receipt = read_json(job['raw_root'] / 'complete.json')
+                    target_index = int(np.flatnonzero(job['targets'] == output)[0])
+                    shard = next(s for s in old_receipt['shards'] if s['first'] <= target_index < s['stop'])
+                    old_path = job['raw_root'] / shard['file']
+                    assert digest(old_path) == shard['sha256']
+                    with np.load(old_path, allow_pickle=False) as saved:
+                        old_positions, old_bounds, old_tokens = saved['detection_positions'], saved['offsets'], saved['tokens']
+                        for j, p in enumerate(old_positions):
+                            if int(p) in job['requested']:
+                                historical_reference[int(p)] = old_tokens[old_bounds[j]:old_bounds[j + 1]].copy()
                 local, token_positions, indices, bounds = [], [], [], [0]
                 for position in range(int(tracks['offsets'][output]), int(tracks['offsets'][output + 1])):
-                    if position not in lookup:
+                    if position not in job['requested']:
                         continue
                     mask, references, reason = support(records, tracks, output, position - int(tracks['offsets'][output]))
                     assert reason == 'available' and all(row['output_index'] <= output for row in references)
                     value = tokens[mask]
-                    j = lookup[position]
-                    np.testing.assert_array_equal(value, raw[offsets[j]:offsets[j + 1]])
+                    if position in lookup:
+                        j = lookup[position]
+                        np.testing.assert_array_equal(value, raw[offsets[j]:offsets[j + 1]])
+                    if smoke and job['raw_root']:
+                        np.testing.assert_array_equal(value, historical_reference[position])
                     coordinates = np.column_stack(np.where(mask))
                     token_positions.append((1 + coordinates[:, 1] * 8 + coordinates[:, 0]).astype(np.int64))
                     local.append(value)
@@ -137,7 +163,9 @@ def prepare(run, smoke, resume, preflight):
                     token_positions=np.concatenate(token_positions), positions=np.array(indices), offsets=np.array(bounds))
                 receipt = dict(identity_sha256=signature, video=video, output=output,
                     prefix_sha256=digest(folder / 'prefix.npy'), roi_sha256=digest(folder / 'roi.npz'),
-                    detections=len(indices), native_tokens_exact=True, frozen_suffix_exact=smoke,
+                    detections=len(indices), native_tokens_exact=all(p in lookup for p in indices),
+                    native_reference_detections=sum(p in lookup for p in indices), frozen_suffix_exact=smoke,
+                    historical_native_exact=True if smoke and job['raw_root'] else None,
                     inputs_end_at_output=True, ground_truth_regions_used=False, completed_at=now())
                 atomic_write_json(path, receipt)
             receipts.append(receipt)
