@@ -23,7 +23,7 @@ sys.path.insert(0, str(ROOT))
 from encode_rc27_cohort import Encoder
 import train_acknowledgement_sae as shared
 from train_frozen_identity_supcon import sample_batch, supcon
-from src.token_identity_sae import TokenIdentitySAE
+from src.token_identity_sae import TokenIdentitySAE, procedure_identity_loss
 from src.checkpoint_io import atomic_write_json, read_json, pause_after_checkpoint
 
 
@@ -117,7 +117,7 @@ def evaluate(data, blocks, model, mean, scale, adaptive, videos, folder):
 
 
 def fit(config, data, initial_blocks, method, adaptive, seed, fitting, held, folder,
-        steps, identity, progress_path, stop_after=None):
+        steps, identity, progress_path, stop_after=None, batch_schedule=None):
     folder.mkdir(parents=True, exist_ok=True)
     job = dict(identity=identity, config=config, method=method, adaptive=adaptive, seed=seed,
                fit_videos=fitting, held_videos=held, steps=steps)
@@ -141,6 +141,10 @@ def fit(config, data, initial_blocks, method, adaptive, seed, fitting, held, fol
     train_records = [dict(row, split='train' if row['video_id'] in fitting else 'excluded') for row in data.records]
     label_map = {key: i for i, key in enumerate(sorted({(r['video_id'], r['lesion_id']) for r in data.records}))}
     labels = torch.tensor([label_map[(r['video_id'], r['lesion_id'])] for r in data.records], device='cuda')
+    procedure_map = {key: i for i, key in enumerate(sorted({r['video_id'] for r in data.records}))}
+    procedures = torch.tensor([procedure_map[r['video_id']] for r in data.records], device='cuda')
+    procedure_weight = float(config.get('procedure_loss_weight', 0.))
+    assert 0 <= procedure_weight <= 1
     rng = np.random.default_rng(seed)
     token_rng = np.random.default_rng(np.random.SeedSequence([seed, 71005]))
     history, sequence, initial, previous = [], [], 1, 0.
@@ -159,12 +163,21 @@ def fit(config, data, initial_blocks, method, adaptive, seed, fitting, held, fol
         initial, previous = saved['step'] + 1, saved['seconds']
     started = time.perf_counter()
     for step in range(initial, steps + 1):
-        chosen = sample_batch(train_records, rng, config)
+        if batch_schedule is None:
+            chosen = sample_batch(train_records, rng, config)
+            token_indices = [token_rng.integers(0, len(data.native[i]), size=config['tokens_per_clip']) for i in chosen]
+        else:
+            scheduled = batch_schedule[step - 1]
+            chosen = scheduled['indices']
+            token_indices = [np.asarray(row, dtype=np.int64) for row in scheduled['tokens']]
         assert all(data.records[i]['video_id'] in fitting for i in chosen)
-        token_indices = [token_rng.integers(0, len(data.native[i]), size=config['tokens_per_clip']) for i in chosen]
         samples = token_batch(data, chosen, token_indices, blocks, mean, scale, adaptive, config['microbatch'])
         projected, decoded, local = model(samples)
         task_loss = supcon(projected, labels[chosen], config['temperature'])
+        global_loss = task_loss
+        if procedure_weight:
+            conditioned_loss = procedure_identity_loss(projected, labels[chosen], procedures[chosen], config['temperature'])
+            task_loss = (1 - procedure_weight) * global_loss + procedure_weight * conditioned_loss
         reconstruction = (decoded - samples.detach()).square().mean()
         loss = task_loss + config['reconstruction_weight'] * reconstruction
         assert torch.isfinite(loss)
@@ -179,6 +192,12 @@ def fit(config, data, initial_blocks, method, adaptive, seed, fitting, held, fol
         sequence.append(dict(indices=chosen, tokens_sha256=hashlib.sha256(np.stack(token_indices).tobytes()).hexdigest()))
         history.append(dict(step=step, loss=float(loss.detach()), identity=float(task_loss.detach()),
             reconstruction=float(reconstruction.detach()), gradient_norm=float(norm), backbone_gradient_norm=backbone_norm))
+        if procedure_weight:
+            negative = labels[chosen, None] != labels[chosen][None, :]
+            within = procedures[chosen, None] == procedures[chosen][None, :]
+            history[-1].update(global_identity=float(global_loss.detach()),
+                procedure_identity=float(conditioned_loss.detach()),
+                within_negative_fraction=float((negative & within).sum() / negative.sum()))
         if step % config['checkpoint_every'] == 0 or step == steps or step == stop_after:
             elapsed = previous + time.perf_counter() - started
             shared.save_torch(checkpoint_path, dict(signature=signature, model=model.state_dict(), blocks=blocks.state_dict(),
@@ -216,7 +235,7 @@ def fit(config, data, initial_blocks, method, adaptive, seed, fitting, held, fol
 def train(run, smoke, output, stop_after):
     config = read_json(run / 'config.json')
     preparation = read_json(Path(config['preparation_run']) / 'config.json')
-    prepared = Path(preparation['storage_root']) / ('smoke' if smoke else 'prepared')
+    prepared = Path(preparation['storage_root']) / ('smoke' if smoke and not config.get('smoke_full_inputs') else 'prepared')
     receipt = read_json(prepared / 'summary.json')
     assert receipt['status'] == 'COMPLETE'
     data = Observations(prepared, [r['index'] for r in receipt['receipts']])
@@ -244,12 +263,13 @@ def train(run, smoke, output, stop_after):
     steps = config['smoke_steps'] if smoke else config['steps']
     seeds = config['seeds'][:1] if smoke else config['seeds']
     outputs = []
-    total = len(seeds) * len(folds) * 4
+    adaptive_states = config.get('adaptive_states', [False, True])
+    total = len(seeds) * len(folds) * 2 * len(adaptive_states)
     for seed in seeds:
         for fold, held in enumerate(folds):
             fitting = videos if smoke else sorted(set(videos) - set(held))
             for method in ['token_sparse', 'token_dense']:
-                for adaptive in [False, True]:
+                for adaptive in adaptive_states:
                     fold_name = 'full' if full_cohort else str(fold)
                     folder = root / ('adaptive' if adaptive else 'frozen') / method / f'seed{seed}' / f'fold{fold_name}'
                     result = fit(local, data, initial_blocks, method, adaptive, seed, fitting, held, folder,

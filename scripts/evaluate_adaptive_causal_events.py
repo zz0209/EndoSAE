@@ -30,9 +30,9 @@ from src.evaluation.realcolon_task import digest
 def specification(run):
     config = read_json(run / 'config.json')
     preparation = read_json(Path(config['prefix_run']) / 'config.json')
-    training = read_json(Path(preparation['training_run']) / 'config.json')
+    training = read_json(Path(config.get('training_run', preparation['training_run'])) / 'config.json')
     fitted = read_json(Path(training['storage_root']) / 'training_summary.json')
-    assert fitted['status'] == 'COMPLETE' and len(fitted['outputs']) == 12
+    assert fitted['status'] == 'COMPLETE' and len(fitted['outputs']) == config.get('expected_models', 12)
     return config, preparation, training, fitted
 
 
